@@ -1,26 +1,49 @@
 # Padrão compartilhado de trabalho
 
-Estas regras são a base comum para Claude Code, Codex, Gemini/Antigravity e
-outras ferramentas de IA.
+Base comum para Claude Code, Codex, Gemini/Antigravity e demais ferramentas de
+IA. É instalado como `WORKFLOW.md` dentro da pasta de configuração de cada
+agente, e não apenas referenciado.
 
-## Contexto e ferramentas
+## Economia de contexto
 
-- Use RTK para comandos de shell quando o ambiente o disponibilizar.
-- Mantenha o Headroom localmente ativo para compressão de contexto.
-- Preserve a intenção do usuário, trabalhando de forma incremental e verificável.
-- Não exponha credenciais, tokens, históricos, bancos de memória ou caminhos absolutos.
+- **RTK** reduz a saída dos comandos de shell. Onde houver hook configurado ele
+  reescreve os comandos sozinho; onde não houver, prefixe com `rtk`.
+- **Headroom** comprime o contexto que chega ao modelo através de um proxy
+  local em `127.0.0.1`. Mantenha-o rodando quando estiver instalado.
+- Leia só o trecho de arquivo de que precisa. Prefira `grep`/`rg` a despejar
+  arquivos inteiros no contexto.
 
 ## Qualidade
 
-Antes de finalizar uma entrega em um projeto, execute `aurum check .` com
-`PYTHONUTF8=1` e busque score mínimo de 70%. Corrija falhas relevantes com
-conteúdo real e justifique checks ignorados por não se aplicarem ao projeto.
+Antes de encerrar uma entrega, rode a auditoria a partir da raiz do projeto com
+`PYTHONUTF8=1`:
 
-Respeite o `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` ou equivalente encontrado no
-projeto antes de alterar arquivos.
+```bash
+aurum check .
+```
+
+Meta: score ≥ 70%. Corrija as falhas com conteúdo real — teste que testa algo,
+README com exemplo que roda. Nunca crie arquivo vazio só para passar no check.
+Checks que não se aplicam ao tipo do projeto devem ser listados como ignorados,
+com uma linha de justificativa cada.
+
+No Claude Code isso está empacotado na skill `qualidade`.
+
+## Precedência das instruções
+
+O arquivo de instruções do projeto (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md` ou
+equivalente) vence este padrão sempre que houver divergência. Leia-o antes de
+alterar qualquer arquivo.
+
+## Segurança
+
+Não versione nem traga para o contexto: tokens, chaves de API, credenciais,
+histórico de sessões, bancos de memória ou caminhos absolutos da máquina.
+Permissões específicas de um projeto ficam no `settings.local.json` daquela
+máquina, nunca no repositório de configuração.
 
 ## Comunicação
 
-Informe o resultado, os arquivos alterados, as validações executadas e
-qualquer limitação restante. Não declare uma integração como concluída sem
-testar a configuração correspondente.
+Ao concluir, informe o resultado, os arquivos alterados, as validações que
+foram de fato executadas e o que ficou de fora. Não declare uma integração como
+pronta sem ter testado a configuração correspondente.

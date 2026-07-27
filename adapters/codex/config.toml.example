@@ -1,0 +1,12 @@
+# Base portátil para o Codex.
+#
+# O instalador mescla estas chaves no seu ~/.codex/config.toml: o que não
+# existir é adicionado, e o que existir com outro valor gera uma pergunta.
+# Credenciais nunca vêm daqui — use variáveis de ambiente ou o login do Codex.
+model_provider = "headroom"
+
+[model_providers.headroom]
+name = "Headroom local proxy"
+base_url = "http://127.0.0.1:{{HEADROOM_PORT}}/v1"
+supports_websockets = true
+requires_openai_auth = true

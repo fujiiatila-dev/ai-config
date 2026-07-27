@@ -1,14 +1,43 @@
 # Mapa de compatibilidade
 
-| Ferramenta | Arquivo instalado | Fonte versionada |
-| --- | --- | --- |
-| Claude Code | `~/.claude/CLAUDE.md` | `claude/CLAUDE.md` |
-| Claude Code | `~/.claude/RTK.md` | `claude/RTK.md` |
-| Claude Code | `~/.claude/agents/` e `skills/` | `claude/agents/` e `claude/skills/` |
-| Codex | `~/.codex/AGENTS.md` | `adapters/codex/AGENTS.md` |
-| Gemini/Antigravity | `~/.gemini/GEMINI.md` | `adapters/gemini/GEMINI.md` |
-| Todos | instruções compartilhadas | `shared/WORKFLOW.md` |
-| RTK + Headroom | binários e proxy locais | `RTK.md`, `HEADROOM.md`, `versions.json` |
+Origem no repositório → destino na máquina, e como cada um é mesclado.
 
-Memória, sessões, credenciais, permissões pessoais e configurações geradas por
-um cliente permanecem fora do Git.
+| Fonte versionada | Instalado em | Merge |
+| --- | --- | --- |
+| `claude/settings.json` | `~/.claude/settings.json` | JSON, chave a chave |
+| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` | bloco `ai-config` |
+| `claude/RTK.md` | `~/.claude/RTK.md` | bloco `ai-config` |
+| `claude/statusline.py` | `~/.claude/statusline.py` | arquivo (pergunta se diferir) |
+| `claude/agents/` | `~/.claude/agents/` | por arquivo |
+| `claude/skills/` | `~/.claude/skills/` | por arquivo |
+| `shared/WORKFLOW.md` | `~/.claude/WORKFLOW.md` | bloco `ai-config` |
+| `shared/WORKFLOW.md` | `~/.codex/WORKFLOW.md` | bloco `ai-config` |
+| `shared/WORKFLOW.md` | `~/.gemini/WORKFLOW.md` | bloco `ai-config` |
+| `adapters/codex/AGENTS.md` | `~/.codex/AGENTS.md` | bloco `ai-config` |
+| `adapters/codex/config.toml.example` | `~/.codex/config.toml` | TOML, por seção/chave |
+| `adapters/gemini/GEMINI.md` | `~/.gemini/GEMINI.md` | bloco `ai-config` |
+| `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
+| `versions.json` | — | lido por `--doctor` como referência |
+
+`WORKFLOW.md` é a única fonte do padrão de trabalho. `CLAUDE.md`, `AGENTS.md` e
+`GEMINI.md` apontam para ele em vez de repetir as regras.
+
+## Placeholders
+
+`claude/settings.json` e `adapters/codex/config.toml.example` usam marcadores
+que o instalador resolve na máquina de destino, para que o repositório não
+carregue caminho absoluto de ninguém:
+
+| marcador | vira |
+| --- | --- |
+| `{{PYTHON}}` | caminho do `python3`/`python` encontrado |
+| `{{NODE}}` | caminho do `node` encontrado |
+| `{{CLAUDE_HOME}}` | `CLAUDE_CONFIG_DIR` ou `~/.claude` |
+| `{{HEADROOM_PORT}}` | `HEADROOM_PORT` ou `48731` |
+
+Sempre com barra normal, inclusive no Windows — Node, Python e o shell aceitam.
+
+## Fora do Git
+
+Memória, sessões, credenciais, `settings.local.json`, permissões de projeto e
+qualquer arquivo gerado por um cliente. O instalador não lê nem escreve nesses.

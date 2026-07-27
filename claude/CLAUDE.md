@@ -1,8 +1,8 @@
 # Instruções globais do Claude Code
 
-@RTK.md
+O padrão de trabalho é o mesmo em qualquer ferramenta. Ele vive em `WORKFLOW.md`
+e é importado abaixo — não duplique regras aqui.
 
-Use o mesmo padrão de trabalho em qualquer ferramenta: preserve a intenção,
-evite credenciais e caminhos absolutos, valide mudanças e siga as instruções do
-projeto. Antes de finalizar uma entrega, execute `aurum check .` com
-`PYTHONUTF8=1` quando disponível e busque score mínimo de 70%.
+@WORKFLOW.md
+
+@RTK.md

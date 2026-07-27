@@ -1,0 +1,14 @@
+# Filtros globais do RTK — valem para todos os seus projetos.
+# Um .rtk/filters.toml dentro do projeto tem precedência sobre este.
+# Docs: https://github.com/rtk-ai/rtk#custom-filters
+schema_version = 1
+
+# Modelo de filtro. Descomente e adapte para ferramentas que você usa em toda
+# máquina e que produzem saída longa demais.
+#
+# [filters.my-global-tool]
+# description = "Compacta a saída do my-global-tool"
+# match_command = "^my-global-tool\\b"
+# strip_ansi = true
+# strip_lines_matching = ["^\\s*$"]
+# max_lines = 40

@@ -11,11 +11,14 @@ AGENTS.local.md
 
 # Backups gerados pelo instalador
 *.bak-*
+backups/
+ai-config-[0-9]*/
 
 # Cache, logs e dados de sessão
 .headroom/
 .claude/projects/
 .claude/history.jsonl
 __pycache__/
+*.pyc
 .venv/
 .DS_Store

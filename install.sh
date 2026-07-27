@@ -1,28 +1,44 @@
 #!/usr/bin/env bash
+# Instalador do ai-config. A lógica de merge vive em tools/aiconfig.py para ser
+# exatamente a mesma no Linux, no macOS e no Windows.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-SRC="$ROOT/claude"
-DEST="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-HEADROOM_PORT="${HEADROOM_PORT:-48731}"
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-GEMINI_HOME="${GEMINI_HOME:-$HOME/.gemini}"
 
-mkdir -p "$DEST" "$DEST/agents" "$DEST/skills"
-if [ -f "$DEST/settings.json" ]; then
-    cp "$DEST/settings.json" "$DEST/settings.json.bak-$(date +%Y%m%d%H%M%S)"
+PY=""
+for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+done
+if [ -z "$PY" ]; then
+    echo "erro: Python 3.9+ é necessário para instalar (e para o status line)." >&2
+    echo "      instale python3 e rode de novo." >&2
+    exit 1
 fi
-cp "$SRC/CLAUDE.md" "$SRC/RTK.md" "$SRC/settings.json" "$SRC/statusline.py" "$DEST/"
-cp -r "$SRC/agents/." "$DEST/agents/"
-cp -r "$SRC/skills/." "$DEST/skills/"
-mkdir -p "$CODEX_HOME" "$GEMINI_HOME"
-cp "$ROOT/adapters/codex/AGENTS.md" "$CODEX_HOME/AGENTS.md"
-cp "$ROOT/adapters/gemini/GEMINI.md" "$GEMINI_HOME/GEMINI.md"
 
-if command -v rtk >/dev/null 2>&1; then echo "RTK encontrado: $(rtk --version)"; else echo "RTK não encontrado; instale-o pelo instalador oficial."; fi
-if command -v headroom >/dev/null 2>&1; then
-    headroom init --global --memory claude || true
-    if command -v codex >/dev/null 2>&1; then headroom init --global --memory codex || true; fi
-    echo "Inicie o proxy Headroom com: headroom proxy --port $HEADROOM_PORT"
-else echo "Headroom não encontrado; instale-o conforme README.md."; fi
-echo "Configuração instalada em $DEST. Reinicie os agentes."
+CMD=install
+ARGS=()
+for a in "$@"; do
+    case "$a" in
+        --doctor|doctor) CMD=doctor ;;
+        -h|--help)
+            cat <<'USO'
+uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes]
+     ./install.sh --doctor
+
+  --dry-run        mostra o que faria, sem escrever nada
+  --keep-existing  em conflito, mantém sempre o valor atual
+  --prefer-repo    em conflito, usa sempre o valor do repo
+  --yes            não pergunta nada (equivale a --keep-existing)
+  --doctor         verifica rtk, headroom, aurum, node e os CLIs
+
+Sem flags, cada conflito é perguntado. Nada é sobrescrito sem backup.
+
+Variáveis: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_HOME, RTK_CONFIG_DIR,
+           HEADROOM_PORT
+USO
+            exit 0 ;;
+        *) ARGS+=("$a") ;;
+    esac
+done
+
+exec "$PY" "$ROOT/tools/aiconfig.py" "$CMD" ${ARGS[@]+"${ARGS[@]}"}

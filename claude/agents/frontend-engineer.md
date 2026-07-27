@@ -8,12 +8,16 @@ Você é o engenheiro especializado no **src/** — app Angular 18 standalone qu
 
 ## ⚠️ ANTES DE MEXER EM VISUAL — leia a skill de design
 
-Antes de qualquer mudança em CSS, layout, ou novo componente UI, **leia [.claude/skills/frontend-design/SKILL.md](.claude/skills/frontend-design/SKILL.md)**. Ela tem:
+Antes de qualquer mudança em CSS, layout, ou novo componente UI, **leia
+`.claude/skills/frontend-design/SKILL.md` do projeto**, se ele existir. Ela tem:
 - Tokens de design do projeto (não invente cores)
 - Quirks Material 18 já queimados (mat-form-field altura, panel wrapping, min-line span inline, etc)
 - Padrões reutilizáveis (`themed-select-field`, `btn-themed`, `filter-input`)
 - Checklist visual obrigatório antes de declarar pronto
 - Regras de dark theme (scoped via `:host-context` vs global em styles.scss)
+
+Se o projeto não tiver essa skill, use a skill global `impeccable`, que cobre
+hierarquia visual, espaçamento, contraste e acessibilidade de forma genérica.
 
 Pula essa skill = revisita o mesmo bug que outro agente já queimou. Não faça.
 
