@@ -45,4 +45,4 @@ Audite o projeto atual contra o padrão FreedomAI e melhore o score.
 - Correções devem ser reais: não crie testes vazios ou docs placeholder só
   para passar no check — isso viola o propósito do padrão.
 - Se o projeto não tiver `CLAUDE.md`/`AGENTS.md`, sugira rodar
-  `powershell -File C:\Users\rayan\padrao-projetos\init-projeto.ps1`.
+  `powershell -File .\scripts\init-projeto.ps1` (quando o projeto fornecer esse script).

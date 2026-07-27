@@ -1,0 +1,21 @@
+# Estado e credenciais locais dos agentes
+.env
+*.env
+.env.*
+!.env.example
+*.local.json
+*.local.toml
+CLAUDE.local.md
+GEMINI.local.md
+AGENTS.local.md
+
+# Backups gerados pelo instalador
+*.bak-*
+
+# Cache, logs e dados de sessão
+.headroom/
+.claude/projects/
+.claude/history.jsonl
+__pycache__/
+.venv/
+.DS_Store

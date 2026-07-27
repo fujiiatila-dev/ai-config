@@ -32,7 +32,7 @@ Pula essa skill = revisita o mesmo bug que outro agente já queimou. Não faça.
 - [src/app/pages/](src/app/pages/) — login, dashboards-page, branding-settings
 - [src/app/theming/](src/app/theming/) — ThemeService + model
 - [src/environments/environment.local.ts](src/environments/environment.local.ts) — METABASE_BASE/API_KEY
-- [proxy.conf.json](proxy.conf.json) — `/api` → nalk Metabase, `/agent` → localhost:8787
+- [proxy.conf.json](proxy.conf.json) — `/api` → backend configurado pelo projeto, `/agent` → proxy local configurado pelo ambiente
 - [angular.json](angular.json) — referencia `proxy.conf.json` no serve target
 
 ## Quirks que você precisa lembrar

@@ -1,28 +1,8 @@
 # ai-config
 
-Configuração padrão pessoal do Claude Code — skills, subagentes, hooks e settings — para replicar o ambiente de trabalho em qualquer máquina.
+Configuração oficial das ferramentas de IA do ambiente de trabalho — instruções, skills, subagentes e integrações de redução de contexto.
 
-## Estrutura
-
-```
-claude/                  # espelho de ~/.claude
-  CLAUDE.md              # instruções globais (importa @RTK.md)
-  RTK.md                 # instruções do RTK (proxy de economia de tokens)
-  settings.json          # modelo, permissões, hooks (rtk + impeccable)
-  statusline.py          # statusline customizada
-  agents/                # subagentes globais
-    backend-engineer.md
-    frontend-engineer.md
-    mcp-engineer.md
-    qa.md
-    tester.md
-    impeccable-manual-edit-applier.md
-  skills/
-    qualidade/           # skill própria de qualidade
-    impeccable/          # skill de design de front-end (terceiro, ver Licenças)
-```
-
-## Instalação em uma máquina nova
+## Instalação
 
 ```bash
 git clone https://github.com/fujiiatila-dev/ai-config.git
@@ -30,24 +10,27 @@ cd ai-config
 ./install.sh
 ```
 
-O script copia os arquivos para `~/.claude/` (fazendo backup do `settings.json` existente).
+No Windows PowerShell, use `.\install.ps1`.
 
-### Dependências externas (não versionadas aqui)
+O instalador copia instruções, skills, sub-agents e hooks para o Claude Code, adapta as instruções para Codex e Gemini/Antigravity, cria backup das configurações existentes e registra Headroom no Claude Code e no Codex quando os CLIs estão disponíveis. Consulte `CONFIGURATION_MAP.md`.
 
-1. **rtk** (hook de economia de tokens no PreToolUse):
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-   ```
-2. **Node.js** (necessário para o detector do impeccable no PostToolUse). Instalação sem sudo:
-   baixe o binário LTS de https://nodejs.org/dist/, extraia em `~/.local/lib` e crie symlinks de
-   `node`, `npm` e `npx` em `~/.local/bin`.
-   > O caminho do node no hook do `settings.json` é absoluto (`/home/atila/.local/bin/node`) —
-   > ajuste se o usuário/home da máquina for outro.
+## Dependências externas
 
-Depois reinicie o Claude Code.
+RTK:
 
-## Licenças
+```bash
+curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+```
 
-- `claude/skills/impeccable/` é derivado de [pbakaus/impeccable](https://github.com/pbakaus/impeccable)
-  (Apache License 2.0 — ver `claude/skills/impeccable/LICENSE`).
-- O restante é configuração pessoal.
+Headroom:
+
+```bash
+uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"
+headroom init --global --memory claude
+headroom init --global --memory codex
+headroom proxy --port 48731
+```
+
+`48731` é uma porta padrão sugerida; altere-a se estiver ocupada. Consulte [HEADROOM.md](HEADROOM.md).
+
+Nunca versione tokens, credenciais, histórico, permissões específicas de projetos ou URLs com chaves.

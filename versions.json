@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "last_verified": "2026-07-27",
+  "tools": {
+    "rtk": "0.44.0",
+    "headroom": "0.32.1",
+    "claude_code": "2.1.185",
+    "codex_cli": "0.145.0",
+    "python": "3.14.4"
+  },
+  "runtime": {
+    "headroom_port": 48731,
+    "headroom_scope": "loopback-only",
+    "telemetry": "disabled-by-default"
+  },
+  "policy": {
+    "credentials_versioned": false,
+    "histories_versioned": false,
+    "machine_absolute_paths_versioned": false
+  }
+}

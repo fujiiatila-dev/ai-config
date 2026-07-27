@@ -78,7 +78,7 @@ GROQ_API_KEY=... METABASE_BASE=... METABASE_API_KEY=... npm start
 
 Em background: use Bash `run_in_background: true`. Pra esperar ficar pronto:
 ```bash
-until curl -s http://localhost:8787/agent/health > /dev/null 2>&1; do sleep 1; done
+until curl -s "http://127.0.0.1:${HEADROOM_PORT:-48731}/agent/health" > /dev/null 2>&1; do sleep 1; done
 ```
 
 ## ⚠️ Verificação CRÍTICA pós-restart (obrigatória)
@@ -87,7 +87,7 @@ until curl -s http://localhost:8787/agent/health > /dev/null 2>&1; do sleep 1; d
 
 **Após qualquer restart, antes de declarar sucesso, você DEVE**:
 
-1. Fazer 1 chamada de teste: `curl -s -X POST http://localhost:8787/agent/chat -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"ping"}]}' --max-time 30`
+1. Fazer 1 chamada de teste: `curl -s -X POST "http://127.0.0.1:${HEADROOM_PORT:-48731}/agent/chat" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"ping"}]}' --max-time 30`
 2. Confirmar no log: `grep "MCP conectado" /tmp/backend.log` deve mostrar `[agent] MCP conectado, X tools disponíveis: ...`
 3. Se não aparecer essa linha, busque `grep "McpError\|ENOENT\|erro:" /tmp/backend.log` e reporte — NÃO declare o restart como bem-sucedido.
 
@@ -105,7 +105,7 @@ A partir do path-fix em `agent.ts` (`DEFAULT_MCP_PATH` resolvido via `import.met
 
 ## Contratos com o resto do sistema
 
-- **Frontend** chama `POST /agent/chat` via proxy (`/agent/*` → localhost:8787 no proxy.conf.json). Espera response `{ reply, toolCallsUsed }`. Mudar shape quebra o frontend.
+- **Frontend** chama `POST /agent/chat` via o proxy configurado pelo projeto. Espera response `{ reply, toolCallsUsed }`. Mudar shape quebra o frontend.
 - **MCP** é spawned pelo backend. Mudanças no MCP → restart backend pra pegar.
 - **Frontend chat.model.ts** define `ChatContext` — backend's `ChatRequest.context` deve aceitar TUDO que o frontend manda. Adicionar campos novos é OK (ignora). Remover/renomear quebra.
 

@@ -28,7 +28,7 @@ You are the V1 tester for **metabase-poc-app**. The project has three deployable
   ```
   GROQ_API_KEY=... METABASE_BASE=... METABASE_API_KEY=... npm start
   ```
-- `curl http://localhost:8787/agent/health` → `{"ok":true,...}` (necessário mas INSUFICIENTE)
+- `curl "http://127.0.0.1:${HEADROOM_PORT:-48731}/agent/health"` → `{"ok":true,...}` (necessário mas INSUFICIENTE)
 - **OBRIGATÓRIO**: depois do health, fazer 1 chamada `POST /agent/chat` qualquer pra forçar o spawn lazy do MCP
 - **Conferir no log**: `grep "MCP conectado" /tmp/backend.log` deve mostrar `[agent] MCP conectado, X tools disponíveis: ...` (hoje X=10: 6 MCP + 2 memory + 2 write). Se não aparecer essa linha, o MCP não spawned — busca por `McpError|ENOENT|erro:` e reporta como FALHA, não sucesso.
 - Resposta do `/agent/chat` deve ter shape `{ reply, toolCallsUsed }` (pode opcionalmente ter `commands` ou `pendingConfirmation`)
