@@ -13,49 +13,6 @@ agente, e não apenas referenciado.
 - Leia só o trecho de arquivo de que precisa. Prefira `grep`/`rg` a despejar
   arquivos inteiros no contexto.
 
-## Especificação com OpenSpec
-
-Antes de codificar uma nova funcionalidade, use o **OpenSpec** para alinhar o
-que será construído. O fluxo é:
-
-```bash
-# Certifique-se de ter o OpenSpec instalado globalmente
-npm install -g @fission-ai/openspec@latest
-
-# Inicialize no projeto (uma vez)
-cd <projeto>
-openspec init --tools claude
-```
-
-### Ciclo propose → design → tasks → apply → archive
-
-1. **`/opsx:propose <nome-da-feature>`** — Gera proposal, delta specs, design e
-   tasks em um passo. O humano revisa antes de seguir.
-2. **`/opsx:apply`** — O agente implementa item por item do `tasks.md`,
-   executando testes e marcando checkboxes.
-3. **`/opsx:update <nome> - <detalhe>`** — Ajusta os artefatos de
-   planejamento sem mexer no código, se algo mudou.
-4. **`/opsx:archive`** — Valida conclusão, sincroniza delta specs com o
-   `specs/` principal e arquiva o change folder.
-
-Os artefatos ficam em `openspec/`:
-
-```text
-openspec/
-├── specs/                  # Especificação permanente (fonte da verdade)
-├── changes/                # Mudanças ativas
-│   └── minha-feature/
-│       ├── .openspec.yaml
-│       ├── proposal.md     # Intenção e escopo
-│       ├── specs/          # Delta specs (ADDED/MODIFIED/REMOVED)
-│       ├── design.md       # Arquitetura técnica
-│       └── tasks.md        # Checklist de implementação
-└── config.yaml             # Contexto tech stack + regras
-```
-
-No Claude Code isso está empacotado na skill `openspec`. O projeto pode ter um
-`openspec/config.yaml` com regras de especificação específicas.
-
 ## Qualidade
 
 Antes de encerrar uma entrega, rode a auditoria a partir da raiz do projeto com
@@ -72,59 +29,18 @@ com uma linha de justificativa cada.
 
 No Claude Code isso está empacotado na skill `qualidade`.
 
-## Segurança
-
-### Política base
-
-Não versione nem traga para o contexto: tokens, chaves de API, credenciais,
-histórico de sessões, bancos de memória ou caminhos absolutos da máquina.
-Permissões específicas de um projeto ficam no `settings.local.json` daquela
-máquina, nunca no repositório de configuração.
-
-### Auditoria de segurança
-
-Cada agente tem sua ferramenta de auditoria de segurança primária:
-
-| Agente | Ferramenta | Como ativar |
-| --- | --- | --- |
-| **Claude Code** | `semgrep` + `gitleaks` (skill `security-audit`) | Skill empacotada; use `/security-audit` |
-| **Codex** | `codex-security` | `npx @openai/codex-security scan .` (requer `OPENAI_API_KEY` ou login) |
-| **Gemini** | `semgrep` + `gitleaks` (mesmo que Claude) | Via skill ou comando direto |
-
-**Tríade de verificações manuais** (qualquer agente, antes de entregar):
-
-1. **Segredos**: `gitleaks detect --source .` — varre todo o repo por tokens,
-   chaves e credenciais acidentalmente commitados.
-2. **Vulnerabilidades SAST**: `semgrep scan --json .` — analisa o código-fonte
-   por padrões inseguros. Use `--config=auto` para regras recomendadas.
-3. **Dependências**: `trivy fs --format json .` — identifica CVEs em
-   dependências (`package.json`, `requirements.txt`, etc.). Alternativa:
-   `npm audit` / `pip audit`.
-
-### Codex Security (OpenAI)
-
-Para o agente Codex, com uma chave `OPENAI_API_KEY` configurada:
-
-```bash
-npx @openai/codex-security scan . \
-  --diff <base-sha> \
-  --json \
-  --fail-on-severity high \
-  --output-dir ./codex-security-results
-```
-
-Saídas: JSON estruturado, SARIF (integrável com GitHub Code Scanning) e
-relatório Markdown. O diretório de estado usa `$CODEX_SECURITY_STATE_DIR` ou
-`$CODEX_HOME/state/plugins/codex-security/scans/<repo>`.
-
-Consulte a skill `security-audit` (Claude/Gemini) ou a documentação do Codex
-Security (Codex) para detalhes.
-
 ## Precedência das instruções
 
 O arquivo de instruções do projeto (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md` ou
 equivalente) vence este padrão sempre que houver divergência. Leia-o antes de
 alterar qualquer arquivo.
+
+## Segurança
+
+Não versione nem traga para o contexto: tokens, chaves de API, credenciais,
+histórico de sessões, bancos de memória ou caminhos absolutos da máquina.
+Permissões específicas de um projeto ficam no `settings.local.json` daquela
+máquina, nunca no repositório de configuração.
 
 ## Comunicação
 
