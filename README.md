@@ -13,9 +13,13 @@ cd ai-config
 ./install.sh
 ```
 
+**Um comando faz tudo:** clona o repositório, instala a configuração (instruções,
+skills, agentes, hooks) **e** as dependências externas (OpenSpec, Semgrep,
+Gitleaks) automaticamente.
+
 No Windows PowerShell: `.\install.ps1` (mesmas flags).
 
-Requer Python 3.9+ — usado pelo instalador e pelo status line. Nada mais.
+Requer Python 3.9+ e Node.js — usados pelo instalador, status line e hooks.
 
 ### O instalador nunca sobrescreve nada em silêncio
 
@@ -48,9 +52,11 @@ o miolo do bloco é atualizado.
 ./install.sh --keep-existing    # em conflito, mantém sempre o valor atual
 ./install.sh --prefer-repo      # em conflito, usa sempre o valor do repo
 ./install.sh --yes              # não pergunta nada (= --keep-existing)
-./install.sh --doctor           # verifica rtk, headroom, aurum, node e os CLIs
+./install.sh --skip-tools      # pula instalação de dependências externas
+./install.sh --doctor           # verifica python, node e todas as ferramentas
 ```
 
+Sem flags: **configuração + dependências**, num comando só.
 Sem flags, cada conflito vira uma pergunta. Em sessão não interativa (CI, pipe)
 o valor atual é sempre mantido.
 
@@ -59,82 +65,27 @@ Destinos, se você quiser mudá-los: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 
 ## Dependências externas
 
-Nenhuma é obrigatória — o ai-config instala e funciona sem elas, e `--doctor`
-mostra o que está faltando. Instale apenas o que for usar no seu fluxo.
+Nenhuma é obrigatória — o `install.sh` instala automaticamente as principais
+(OpenSpec, Semgrep, Gitleaks). Use `--skip-tools` se quiser só a configuração.
 
-### Economia de tokens
+### Instalação manual (alternativa)
 
-**RTK** (reduz a saída do shell antes de virar contexto):
+Se preferir instalar por conta própria ou se a automação falhar:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-```
+| Ferramenta | Finalidade | Instalação |
+| --- | --- | --- |
+| **RTK** | Economia de saída do shell | `npm install -g rtk` ou `curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \| sh` |
+| **Headroom** | Compressão de contexto | `uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"` e `headroom init --global --memory claude` |
+| **aurum** | Auditoria de qualidade | Canal interno FreedomAI |
+| **OpenSpec** | Especificação SDD | `npm install -g @fission-ai/openspec@latest` |
+| **Semgrep** | SAST de segurança | `pip install semgrep` |
+| **Gitleaks** | Detecção de segredos | `winget install gitleaks` (Windows) / `brew install gitleaks` (Mac) |
+| **Trivy** | SCA de dependências | `winget install aquasecurity.trivy` (Windows) / `brew install trivy` (Mac) |
+| **Codex Security** | Segurança profunda p/ Codex | `npx @openai/codex-security login` (requer API key OpenAI) |
 
-**Headroom** (comprime o contexto que chega ao modelo, via proxy local):
-
-```bash
-uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"
-headroom init --global --memory claude
-headroom init --global --memory codex
-headroom proxy --port 48731
-```
-
-`48731` é só uma sugestão de porta; troque com `HEADROOM_PORT` se estiver
-ocupada. Detalhes em [HEADROOM.md](HEADROOM.md).
-
-### Qualidade
-
-**aurum** (auditoria de qualidade de projeto, usada pela skill `qualidade`) —
-instale pelo canal interno do padrão FreedomAI.
-
-### Especificação (Spec-Driven Development)
-
-**OpenSpec** (especificação e planejamento antes de codificar, skills
-`openspec` para Claude Code e `WORKFLOW.md` para todos os agentes):
-
-```bash
-npm install -g @fission-ai/openspec@latest
-```
-
-Compatível com Claude Code, Codex, Cursor, Copilot e mais 30+ assistentes.
-Uso: `openspec init --tools claude` no projeto.
-
-### Segurança (100% local, gratuito, sem API key)
-
-Para Claude Code e Gemini (o Codex tem suporte nativo ao Codex Security):
-
-**Semgrep** — SAST (análise estática de padrões inseguros):
-
-```bash
-pip install semgrep
-```
-
-**Gitleaks** — detecção de segredos e credenciais:
-
-```bash
-# macOS/Linux:
-brew install gitleaks
-# Windows (scoop):
-scoop install gitleaks
-```
-
-**Trivy** — vulnerabilidades em dependências (opcional):
-
-```bash
-# macOS/Linux:
-brew install trivy
-# Windows (scoop):
-scoop install trivy
-```
-
-**Codex Security** (OpenAI — para o agente Codex, requer API key):
-
-```bash
-npx @openai/codex-security login
-# ou: export OPENAI_API_KEY="sk-..."
-```
-
-### Resumo
+> O `install.sh` instala automaticamente: OpenSpec (npm), Semgrep (pip),
+> Gitleaks e Trivy (winget/choco no Windows, brew no macOS/Linux).
+> RTK, Headroom e aurum são instalados manualmente por serem opcionais.
 
 ## Ferramentas e versões de referência
 
