@@ -26,7 +26,7 @@ uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes]
   --keep-existing  em conflito, mantem sempre o valor atual
   --prefer-repo    em conflito, usa sempre o valor do repo
   --yes            nao pergunta nada (equivale a --keep-existing)
-  --doctor         verifica rtk, headroom, aurum, node e os CLIs
+  --doctor         verifica rtk, headroom, aurum, node, openspec, semgrep, gitleaks, trivy e os CLIs
 
 Sem flags, cada conflito e perguntado. Nada e sobrescrito sem backup.
 

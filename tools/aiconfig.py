@@ -516,6 +516,10 @@ def cmd_doctor(_args) -> int:
         ("claude", ("claude",), "Claude Code CLI"),
         ("codex", ("codex",), "Codex CLI"),
         ("git", ("git",), "controle de versão"),
+        ("openspec", ("openspec",), "especificação SDD (skill openspec)"),
+        ("semgrep", ("semgrep",), "SAST de segurança (skill security-audit)"),
+        ("gitleaks", ("gitleaks",), "detecção de segredos (skill security-audit)"),
+        ("trivy", ("trivy",), "SCA de dependências (skill security-audit)"),
     ]
     for nome, cands, nota in checks:
         exe = which(*cands)
