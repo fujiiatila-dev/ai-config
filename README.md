@@ -15,7 +15,7 @@ cd ai-config
 
 **Um comando faz tudo:** clona o repositório, instala a configuração (instruções,
 skills, agentes, hooks) **e** as dependências externas (OpenSpec, Semgrep,
-Gitleaks) automaticamente.
+Gitleaks e Trivy) automaticamente.
 
 No Windows PowerShell: `.\install.ps1` (mesmas flags).
 
@@ -79,8 +79,8 @@ Se preferir instalar por conta própria ou se a automação falhar:
 | **aurum** | Auditoria de qualidade | Canal interno FreedomAI |
 | **OpenSpec** | Especificação SDD | `npm install -g @fission-ai/openspec@latest` |
 | **Semgrep** | SAST de segurança | `pip install semgrep` |
-| **Gitleaks** | Detecção de segredos | `winget install gitleaks` (Windows) / `brew install gitleaks` (Mac) |
-| **Trivy** | SCA de dependências | `winget install aquasecurity.trivy` (Windows) / `brew install trivy` (Mac) |
+| **Gitleaks** | Detecção de segredos | `winget install gitleaks` (Windows) / `brew install gitleaks` (macOS/Linux) |
+| **Trivy** | SCA de dependências | `winget install aquasecurity.trivy` (Windows) / `brew install trivy` (macOS/Linux) |
 | **Codex Security** | Segurança profunda p/ Codex | `npx @openai/codex-security login` (requer API key OpenAI) |
 
 > O `install.sh` instala automaticamente: OpenSpec (npm), Semgrep (pip),

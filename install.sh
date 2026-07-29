@@ -47,8 +47,12 @@ USO
 done
 
 # ── 1. Instalar/fixar configuração ──────────────────────────────────────────
-"$PY" "$ROOT/tools/aiconfig.py" "$CMD" ${ARGS[@]+"${ARGS[@]}"}
-RC=$?
+if "$PY" "$ROOT/tools/aiconfig.py" "$CMD" ${ARGS[@]+"${ARGS[@]}"}; then
+    RC=0
+else
+    RC=$?
+    exit "$RC"
+fi
 
 # ── 2. Instalar dependências externas ────────────────────────────────────────
 # Só instala no modo normal (não --doctor)
@@ -98,8 +102,12 @@ if [ "$CMD" = install ] && [ "$SKIP_TOOLS" = false ]; then
             choco install gitleaks -y --no-progress && \
                 echo "    gitleaks instalado via choco" || \
                 { echo "    aviso: choco falhou"; FAIL=true; }
+        elif command -v brew &>/dev/null; then
+            brew install gitleaks && \
+                echo "    gitleaks instalado via brew" && hash -r || \
+                { echo "    aviso: brew falhou"; FAIL=true; }
         else
-            echo "    aviso: sem winget ou choco. Instale manualmente:"
+            echo "    aviso: sem winget, choco ou brew. Instale manualmente:"
             echo "           https://github.com/gitleaks/gitleaks/releases"
             FAIL=true
         fi
@@ -118,8 +126,12 @@ if [ "$CMD" = install ] && [ "$SKIP_TOOLS" = false ]; then
             choco install trivy -y --no-progress && \
                 echo "    trivy instalado via choco" || \
                 { echo "    aviso: choco falhou"; FAIL=true; }
+        elif command -v brew &>/dev/null; then
+            brew install trivy && \
+                echo "    trivy instalado via brew" && hash -r || \
+                { echo "    aviso: brew falhou"; FAIL=true; }
         else
-            echo "    aviso: sem winget ou choco. Instale manualmente:"
+            echo "    aviso: sem winget, choco ou brew. Instale manualmente:"
             echo "           https://github.com/aquasecurity/trivy/releases"
             FAIL=true
         fi
@@ -133,7 +145,7 @@ if [ "$CMD" = install ] && [ "$SKIP_TOOLS" = false ]; then
         echo "  Rode  ./install.sh --doctor  para conferir."
     fi
 
-    echo "  Nota: ferramentas instaladas via winget/choco podem exigir"
+    echo "  Nota: ferramentas instaladas via winget/choco/brew podem exigir"
     echo "        reiniciar o terminal para ficarem disponíveis no PATH."
 fi
 

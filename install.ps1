@@ -49,6 +49,9 @@ $env:PYTHONUTF8 = '1'
 # ── 1. Instalar/fixar configuracao ─────────────────────────────────────────────
 & $Py (Join-Path $Root 'tools\aiconfig.py') $Cmd @Rest
 $RC = $LASTEXITCODE
+if ($RC -ne 0) {
+    exit $RC
+}
 
 # ── 2. Instalar dependencias externas ───────────────────────────────────────────
 if ($Cmd -eq 'install' -and -not $SkipTools) {
@@ -156,7 +159,7 @@ if ($Cmd -eq 'install' -and -not $SkipTools) {
         Write-Host "  Todas as dependencias ja estavam ou foram instaladas."
     } else {
         Write-Host "  Algumas dependencias podem nao ter sido instaladas."
-        Write-Host "  Rode  ./install.sh --doctor  para conferir."
+        Write-Host "  Rode  .\install.ps1 --doctor  para conferir."
     }
 
     Write-Host "  Nota: ferramentas instaladas via winget/choco podem exigir"
