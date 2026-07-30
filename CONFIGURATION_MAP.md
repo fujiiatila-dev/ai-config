@@ -19,6 +19,26 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
 | `versions.json` | — | lido por `--doctor` como referência |
 
+## Skills desta configuração
+
+| Skill | Agente | Finalidade |
+| --- | --- | --- |
+| `qualidade` | Claude Code | Auditoria de qualidade (`aurum check`, score ≥ 70%) |
+| `impeccable` | Claude Code | Design e UX de interfaces frontend |
+| `openspec` | Claude Code | Spec-Driven Development antes de codificar |
+| `security-audit` | Claude Code | Semgrep + Gitleaks + Trivy |
+
+## Agentes especializados
+
+| Agente | Função |
+| --- | --- |
+| `openspec-engineer` | Ciclo propose → apply → archive |
+| `security-analyst` | Auditoria local de segurança |
+
+As skills e os agentes especializados são nativos do Claude Code. Codex e
+Gemini recebem o mesmo padrão por seus adapters e pelo `WORKFLOW.md`
+compartilhado.
+
 `WORKFLOW.md` é a única fonte do padrão de trabalho. `CLAUDE.md`, `AGENTS.md` e
 `GEMINI.md` apontam para ele em vez de repetir as regras.
 

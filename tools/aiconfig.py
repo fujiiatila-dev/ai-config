@@ -501,30 +501,167 @@ def tool_version(exe: str) -> str | None:
     return None
 
 
+def node_package_version(package_name: str) -> str | None:
+    """Return an installed npm package version without downloading anything."""
+    roots: list[Path] = [ROOT / "node_modules"]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(Path(appdata) / "npm" / "node_modules")
+
+    npm = which("npm")
+    if npm:
+        try:
+            result = subprocess.run(
+                [npm, "root", "-g"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                roots.append(Path(result.stdout.strip()))
+        except Exception:
+            pass
+
+    relative = Path(*package_name.split("/")) / "package.json"
+    for root in roots:
+        metadata = root / relative
+        try:
+            version = json.loads(metadata.read_text(encoding="utf-8")).get("version")
+            if isinstance(version, str) and version:
+                return version
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def doctor_checks() -> list[tuple[str, str, tuple[str, ...], str, str | None]]:
+    """Describe doctor checks with explicit versions.json keys."""
+    return [
+        ("python", "python", (sys.executable,), "obrigatório: instalador e statusline", None),
+        ("node", "node", ("node",), "obrigatório para hooks e OpenSpec", None),
+        ("rtk", "rtk", ("rtk",), "economia de tokens no shell", None),
+        ("headroom", "headroom", ("headroom",), "compressão de contexto (proxy local)", None),
+        ("aurum", "aurum", ("aurum",), "auditoria de qualidade (skill qualidade)", None),
+        ("claude", "claude_code", ("claude",), "Claude Code CLI", None),
+        ("codex", "codex_cli", ("codex",), "Codex CLI", None),
+        ("git", "git", ("git",), "controle de versão", None),
+        ("openspec", "openspec", ("openspec",), "especificação SDD (skill openspec)", None),
+        ("semgrep", "semgrep", ("semgrep",), "SAST de segurança (skill security-audit)", None),
+        ("gitleaks", "gitleaks", ("gitleaks",), "detecção de segredos (skill security-audit)", None),
+        ("trivy", "trivy", ("trivy",), "SCA de dependências (skill security-audit)", None),
+        (
+            "codex-security",
+            "codex_security",
+            ("codex-security",),
+            "auditoria profunda de segurança para Codex",
+            "@openai/codex-security",
+        ),
+    ]
+
+
+def tool_install_command(tool_name: str) -> list[str] | None:
+    """Build an install command using only package managers already available."""
+    if tool_name == "openspec":
+        npm = which("npm")
+        return [npm, "install", "-g", "@fission-ai/openspec@latest"] if npm else None
+
+    if tool_name == "semgrep":
+        return [sys.executable, "-m", "pip", "install", "--user", "semgrep"]
+
+    packages = {
+        "gitleaks": {
+            "winget": "Gitleaks.Gitleaks",
+            "choco": "gitleaks",
+            "brew": "gitleaks",
+        },
+        "trivy": {
+            "winget": "AquaSecurity.Trivy",
+            "choco": "trivy",
+            "brew": "trivy",
+        },
+    }
+    package = packages.get(tool_name)
+    if not package:
+        return None
+
+    winget = which("winget")
+    if winget:
+        return [
+            winget,
+            "install",
+            "--id",
+            package["winget"],
+            "--exact",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--silent",
+        ]
+    choco = which("choco")
+    if choco:
+        return [choco, "install", package["choco"], "-y", "--no-progress"]
+    brew = which("brew")
+    if brew:
+        return [brew, "install", package["brew"]]
+    return None
+
+
+def install_recommended_tools() -> bool:
+    """Install recommended tools when missing; keep configuration usable on failure."""
+    head("Ferramentas recomendadas")
+    complete = True
+    notes = {
+        "openspec": "OpenSpec (especificação SDD)",
+        "semgrep": "Semgrep (SAST)",
+        "gitleaks": "Gitleaks (segredos)",
+        "trivy": "Trivy (dependências)",
+    }
+    for tool_name, description in notes.items():
+        if which(tool_name):
+            keep(f"{description} já instalado")
+            continue
+
+        command = tool_install_command(tool_name)
+        if not command:
+            warn(f"{description}: nenhum gerenciador compatível disponível")
+            complete = False
+            continue
+
+        add(f"instalando {description}...")
+        try:
+            result = subprocess.run(command, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            warn(f"{description}: falha ao executar instalador ({exc})")
+            complete = False
+            continue
+        if result.returncode == 0:
+            add(f"{description} instalado")
+        else:
+            warn(f"{description}: instalador terminou com código {result.returncode}")
+            complete = False
+
+    if complete:
+        print("  ferramentas recomendadas prontas.")
+    else:
+        print("  algumas ferramentas não ficaram disponíveis; rode --doctor para conferir.")
+    print("  reinicie o terminal se um gerenciador acabou de atualizar o PATH.")
+    return complete
+
+
 # ── comandos ─────────────────────────────────────────────────────────────────
 def cmd_doctor(_args) -> int:
     versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
     esperado = versions.get("tools", {})
     head("Diagnóstico do ambiente")
     faltando = []
-    checks = [
-        ("python3", ("python3", "python"), "obrigatório: instalador e statusline"),
-        ("node", ("node",), "obrigatório para o hook do skill impeccable"),
-        ("rtk", ("rtk",), "economia de tokens no shell"),
-        ("headroom", ("headroom",), "compressão de contexto (proxy local)"),
-        ("aurum", ("aurum",), "auditoria de qualidade (skill qualidade)"),
-        ("claude", ("claude",), "Claude Code CLI"),
-        ("codex", ("codex",), "Codex CLI"),
-        ("git", ("git",), "controle de versão"),
-    ]
-    for nome, cands, nota in checks:
+    for nome, chave, cands, nota, npm_package in doctor_checks():
         exe = which(*cands)
-        if not exe:
+        package_version = node_package_version(npm_package) if npm_package and not exe else None
+        if not exe and not package_version:
             print(f"  {_c('33', 'ausente')}  {nome:<10} — {nota}")
             faltando.append(nome)
             continue
-        v = tool_version(exe) or "?"
-        chave = {"claude": "claude_code", "codex": "codex_cli"}.get(nome, nome)
+        v = tool_version(exe) if exe else package_version
+        v = v or "?"
         ref = esperado.get(chave)
         marca = ""
         if ref and v != "?" and v != ref:
@@ -535,8 +672,8 @@ def cmd_doctor(_args) -> int:
     print(f"\n  HEADROOM_PORT = {porta}")
     if faltando:
         print(
-            f"\n  {_c('33', 'Ausentes:')} {', '.join(faltando)} — veja README.md "
-            "para instalar. O ai-config instala e funciona sem eles."
+            f"\n  {_c('33', 'Ausentes:')} {', '.join(faltando)} — rode o instalador "
+            "padrão e reinicie o terminal; veja README.md para alternativas."
         )
     return 0
 
@@ -617,6 +754,14 @@ def cmd_install(args) -> int:
         if ctx.backup_dir.exists():
             print(f"  backup do estado anterior: {ctx.backup_dir}")
         print("  reinicie o Claude Code / Codex para carregar as mudanças.")
+
+    if ctx.dry_run:
+        print("  (--dry-run: ferramentas não instaladas)")
+    elif args.skip_tools:
+        print("  (--skip-tools: ferramentas não instaladas)")
+    else:
+        install_recommended_tools()
+
     print("  rode  ./install.sh --doctor  para conferir as ferramentas externas.")
     return 0
 
@@ -628,6 +773,11 @@ def main() -> int:
     i = sub.add_parser("install", help="instala/atualiza as configurações")
     i.add_argument("--dry-run", action="store_true", help="mostra o que faria")
     i.add_argument("--yes", action="store_true", help="não pergunta nada")
+    i.add_argument(
+        "--skip-tools",
+        action="store_true",
+        help="sincroniza apenas configurações, sem instalar ferramentas",
+    )
     g = i.add_mutually_exclusive_group()
     g.add_argument("--keep-existing", action="store_true", help="conflito: mantém o local")
     g.add_argument("--prefer-repo", action="store_true", help="conflito: usa o do repo")

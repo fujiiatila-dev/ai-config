@@ -1,8 +1,9 @@
 # ai-config
 
 Configuração das ferramentas de IA do ambiente de trabalho — instruções,
-skills, subagentes e as camadas de economia de tokens e auditoria. O mesmo
-padrão para Claude Code, Codex e Gemini/Antigravity, em qualquer máquina.
+skills, subagentes e as camadas de economia de tokens, especificação,
+auditoria de qualidade e segurança. O mesmo padrão para Claude Code, Codex e
+Gemini/Antigravity, em qualquer máquina.
 
 ## Instalação
 
@@ -12,9 +13,13 @@ cd ai-config
 ./install.sh
 ```
 
+**Um comando faz tudo:** instala a configuração completa de Claude Code,
+Codex e Gemini/Antigravity e prepara OpenSpec, Semgrep, Gitleaks e Trivy.
+
 No Windows PowerShell: `.\install.ps1` (mesmas flags).
 
-Requer Python 3.9+ — usado pelo instalador e pelo status line. Nada mais.
+Requer Python 3.10+ e Node.js — usados pelo instalador, status line, hooks e
+OpenSpec.
 
 ### O instalador nunca sobrescreve nada em silêncio
 
@@ -47,9 +52,11 @@ o miolo do bloco é atualizado.
 ./install.sh --keep-existing    # em conflito, mantém sempre o valor atual
 ./install.sh --prefer-repo      # em conflito, usa sempre o valor do repo
 ./install.sh --yes              # não pergunta nada (= --keep-existing)
-./install.sh --doctor           # verifica rtk, headroom, aurum, node e os CLIs
+./install.sh --skip-tools       # sincroniza só configurações
+./install.sh --doctor           # verifica runtimes, agentes e ferramentas
 ```
 
+Sem flags: **configuração + ferramentas recomendadas**, num comando só.
 Sem flags, cada conflito vira uma pergunta. Em sessão não interativa (CI, pipe)
 o valor atual é sempre mantido.
 
@@ -58,29 +65,43 @@ Destinos, se você quiser mudá-los: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 
 ## Dependências externas
 
-Nenhuma é obrigatória — o ai-config instala e funciona sem elas, e `--doctor`
-mostra o que está faltando.
+As configurações funcionam sem ferramentas externas, mas o instalador prepara
+automaticamente as recomendadas. Use `--skip-tools` para o modo config-only.
 
-**RTK** (reduz a saída do shell antes de virar contexto):
+| Ferramenta | Finalidade | Preparação automática |
+| --- | --- | --- |
+| **OpenSpec** | Spec-Driven Development | npm |
+| **Semgrep** | SAST de segurança | pip do Python atual |
+| **Gitleaks** | Detecção de segredos | winget, Chocolatey ou Homebrew |
+| **Trivy** | CVEs em dependências | winget, Chocolatey ou Homebrew |
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-```
+Se a automação falhar, use `npm install -g @fission-ai/openspec@latest`,
+`python -m pip install --user semgrep` e o gerenciador do sistema para
+Gitleaks/Trivy (`winget`, `choco` ou `brew`).
 
-**Headroom** (comprime o contexto que chega ao modelo, via proxy local):
+RTK, Headroom e aurum continuam opcionais e são instalados pelos seus canais
+próprios. Codex Security exige autenticação e nunca é instalado
+automaticamente.
 
-```bash
-uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"
-headroom init --global --memory claude
-headroom init --global --memory codex
-headroom proxy --port 48731
-```
+## Ferramentas e versões de referência
 
-`48731` é só uma sugestão de porta; troque com `HEADROOM_PORT` se estiver
-ocupada. Detalhes em [HEADROOM.md](HEADROOM.md).
+O `./install.sh --doctor` compara as versões locais com estas referências.
+Divergências geram aviso, não impedem a instalação.
 
-**aurum** (auditoria de qualidade de projeto, usada pela skill `qualidade`) —
-instale pelo canal interno do padrão FreedomAI.
+| Ferramenta | Versão ref. |
+| --- | --- |
+| Python | 3.14.4 |
+| Node.js | 24.15.0 |
+| RTK | 0.44.1 |
+| Headroom | 0.32.1 |
+| aurum | 0.4.0 |
+| Claude Code | 2.1.220 |
+| Codex CLI | 0.146.0 |
+| OpenSpec | 1.7.0 |
+| Semgrep | 1.172.0 |
+| Gitleaks | 8.30.1 |
+| Trivy | 0.72.0 |
+| Codex Security | 0.1.1 |
 
 ## O que fica no repositório e o que não fica
 

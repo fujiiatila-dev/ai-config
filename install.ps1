@@ -5,10 +5,17 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $Py = $null
 foreach ($c in @('python', 'python3', 'py')) {
-    if (Get-Command $c -ErrorAction SilentlyContinue) { $Py = $c; break }
+    if (Get-Command $c -ErrorAction SilentlyContinue) {
+        try {
+            & $c -c "import sys; raise SystemExit(sys.version_info < (3, 10))" *> $null
+            if ($LASTEXITCODE -eq 0) { $Py = $c; break }
+        } catch {
+            # Continua procurando outro interpretador funcional.
+        }
+    }
 }
 if (-not $Py) {
-    Write-Error "Python 3.9+ e necessario para instalar (e para o status line). Instale e rode de novo."
+    Write-Error "Python 3.10+ e necessario para instalar (e para o status line). Instale e rode de novo."
     exit 1
 }
 
@@ -19,16 +26,18 @@ foreach ($a in $args) {
         '^(--doctor|doctor)$' { $Cmd = 'doctor' }
         '^(-h|--help)$' {
             Write-Host @'
-uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes]
+uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
      .\install.ps1 --doctor
 
   --dry-run        mostra o que faria, sem escrever nada
   --keep-existing  em conflito, mantem sempre o valor atual
   --prefer-repo    em conflito, usa sempre o valor do repo
   --yes            nao pergunta nada (equivale a --keep-existing)
-  --doctor         verifica rtk, headroom, aurum, node e os CLIs
+  --skip-tools     sincroniza so configuracoes, sem instalar ferramentas
+  --doctor         verifica Python, Node, agentes e ferramentas recomendadas
 
-Sem flags, cada conflito e perguntado. Nada e sobrescrito sem backup.
+Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
+Gitleaks e Trivy. Nada e sobrescrito sem backup.
 
 Variaveis: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_HOME, RTK_CONFIG_DIR,
            HEADROOM_PORT
