@@ -77,6 +77,22 @@ class DoctorTests(unittest.TestCase):
 
         self.assertEqual(version, "9.8.7")
 
+    def test_tool_version_ignores_failed_flags(self) -> None:
+        failed = subprocess.CompletedProcess(
+            ["gitleaks", "--version"], 1, "", "unknown flag"
+        )
+        succeeded = subprocess.CompletedProcess(
+            ["gitleaks", "version"], 0, "8.30.1\n", ""
+        )
+        with mock.patch.object(
+            AICONFIG.subprocess,
+            "run",
+            side_effect=[failed, succeeded],
+        ):
+            version = AICONFIG.tool_version("gitleaks")
+
+        self.assertEqual(version, "8.30.1")
+
 
 class ToolInstallationTests(unittest.TestCase):
     def test_security_tools_use_homebrew_when_it_is_available(self) -> None:
@@ -114,6 +130,20 @@ class ToolInstallationTests(unittest.TestCase):
             self.assertTrue(AICONFIG.install_recommended_tools())
 
         self.assertEqual(run.call_count, 4)
+
+    def test_winget_no_upgrade_available_is_success(self) -> None:
+        self.assertTrue(
+            AICONFIG.install_command_succeeded(
+                ["winget.exe", "install", "--id", "Gitleaks.Gitleaks"],
+                0x8A15002B,
+            )
+        )
+        self.assertFalse(
+            AICONFIG.install_command_succeeded(
+                ["winget.exe", "install", "--id", "Gitleaks.Gitleaks"],
+                1,
+            )
+        )
 
     def test_standard_install_runs_recommended_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -478,20 +478,52 @@ def install_tree(src: Path, dest: Path, ctx: Ctx, rotulo: str) -> None:
 
 
 # ── descoberta de binários ───────────────────────────────────────────────────
+def persistent_windows_paths() -> list[str]:
+    """Read PATH entries persisted after this process was started."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    locations = (
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    entries: list[str] = []
+    for hive, key_name in locations:
+        try:
+            with winreg.OpenKey(hive, key_name) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        entries.extend(os.path.expandvars(value).split(os.pathsep))
+    return [entry for entry in entries if entry]
+
+
 def which(*names: str) -> str | None:
+    search_path = os.pathsep.join(
+        [os.environ.get("PATH", ""), *persistent_windows_paths()]
+    )
     for n in names:
-        p = shutil.which(n)
+        p = shutil.which(n, path=search_path)
         if p:
             return p
     return None
 
 
 def tool_version(exe: str) -> str | None:
-    for flag in ("--version", "-V"):
+    for args in (("--version",), ("version",), ("-V",)):
         try:
             r = subprocess.run(
-                [exe, flag], capture_output=True, text=True, timeout=8
+                [exe, *args], capture_output=True, text=True, timeout=8
             )
+            if r.returncode != 0:
+                continue
             out = (r.stdout + r.stderr).strip().splitlines()
             if out:
                 m = re.search(r"\d+\.\d+(\.\d+)?", out[0])
@@ -605,6 +637,15 @@ def tool_install_command(tool_name: str) -> list[str] | None:
     return None
 
 
+def install_command_succeeded(command: list[str], returncode: int) -> bool:
+    """Treat winget's 'already installed/no upgrade' result as success."""
+    if returncode == 0:
+        return True
+    executable = Path(command[0]).name.lower()
+    unsigned_code = returncode & 0xFFFFFFFF
+    return executable in {"winget", "winget.exe"} and unsigned_code == 0x8A15002B
+
+
 def install_recommended_tools() -> bool:
     """Install recommended tools when missing; keep configuration usable on failure."""
     head("Ferramentas recomendadas")
@@ -633,7 +674,7 @@ def install_recommended_tools() -> bool:
             warn(f"{description}: falha ao executar instalador ({exc})")
             complete = False
             continue
-        if result.returncode == 0:
+        if install_command_succeeded(command, result.returncode):
             add(f"{description} instalado")
         else:
             warn(f"{description}: instalador terminou com código {result.returncode}")
