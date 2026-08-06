@@ -8,11 +8,22 @@ chega ao modelo.
 
 ```bash
 uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"
-headroom init --global --memory claude
-headroom init --global --memory codex
+headroom init --global --memory claude --port "${HEADROOM_PORT:-48731}"
+headroom init --global --memory codex  --port "${HEADROOM_PORT:-48731}"
 headroom proxy --port "${HEADROOM_PORT:-48731}"
 headroom doctor
 ```
+
+> ⚠️ **O `--port` no `init` é obrigatório.** O padrão do headroom é `8787`; o
+> padrão do ai-config é `48731`. Sem o `--port`, o `headroom init` grava `8787`
+> no roteamento dos agentes (e no manifest em `~/.headroom/`), enquanto o proxy
+> sobe em `48731` — o Codex fica sem conexão e aparece o erro de stream
+> desconectado. Passe sempre `--port "${HEADROOM_PORT:-48731}"` no `init` e no
+> `proxy`.
+>
+> Já rodou o init com a porta errada? Repita com a porta certa (o init
+> reescreve o roteamento): `headroom init --global --memory codex --port
+> "${HEADROOM_PORT:-48731}"`.
 
 Estes comandos são seus, não do `install.sh`. O instalador do ai-config **não**
 roda `headroom init` nem sobe o proxy — ele só escreve a seção

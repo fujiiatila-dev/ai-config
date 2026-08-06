@@ -93,10 +93,10 @@ Divergências geram aviso, não impedem a instalação.
 | Python | 3.14.4 |
 | Node.js | 24.15.0 |
 | RTK | 0.44.1 |
-| Headroom | 0.32.1 |
+| Headroom | 0.34.0 |
 | aurum | 0.4.0 |
 | Claude Code | 2.1.220 |
-| Codex CLI | 0.146.0 |
+| Codex CLI | 0.146.1 |
 | OpenSpec | 1.7.0 |
 | Semgrep | 1.172.0 |
 | Gitleaks | 8.30.1 |

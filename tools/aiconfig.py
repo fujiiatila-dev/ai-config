@@ -26,6 +26,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -519,8 +520,15 @@ def which(*names: str) -> str | None:
 def tool_version(exe: str) -> str | None:
     for args in (("--version",), ("version",), ("-V",)):
         try:
+            # errors='replace': binários de terceiros (ex.: stub python3 da
+            # Microsoft Store) podem emitir texto fora do utf-8 e o decode
+            # falharia em thread, fora do alcance deste try/except.
             r = subprocess.run(
-                [exe, *args], capture_output=True, text=True, timeout=8
+                [exe, *args],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=8,
             )
             if r.returncode != 0:
                 continue
@@ -689,6 +697,18 @@ def install_recommended_tools() -> bool:
 
 
 # ── comandos ─────────────────────────────────────────────────────────────────
+def proxy_status(porta: str) -> str:
+    """Probe real do proxy Headroom: 'ok', 'http <status>' ou 'fora'."""
+    # Sem ProxyHandler: o opener padrão do urllib respeita proxy de ambiente e
+    # do registro do Windows, que podem interceptar até chamadas de loopback.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{porta}/readyz", timeout=3) as r:
+            return "ok" if r.status == 200 else f"http {r.status}"
+    except Exception:
+        return "fora"
+
+
 def cmd_doctor(_args) -> int:
     versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
     esperado = versions.get("tools", {})
@@ -711,6 +731,32 @@ def cmd_doctor(_args) -> int:
 
     porta = os.environ.get("HEADROOM_PORT", str(versions.get("runtime", {}).get("headroom_port", 48731)))
     print(f"\n  HEADROOM_PORT = {porta}")
+
+    # Probe real da porta: um proxy configurado mas fora do ar derruba o Codex
+    # com erro críptico de stream. Aqui o motivo aparece na hora.
+    st = proxy_status(porta)
+    if st == "ok":
+        print(
+            f"  {_c('32', 'ok')}       headroom-proxy  respondendo em "
+            f"http://127.0.0.1:{porta}/readyz"
+        )
+    else:
+        if which("headroom"):
+            acao = f"rode: headroom proxy --port {porta}  (ou o atalho de inicialização)"
+        else:
+            acao = f"instale o headroom (veja README.md) e rode: headroom proxy --port {porta}"
+        if st.startswith("http"):
+            print(
+                f"  {_c('33', '!')}       headroom-proxy  respondeu HTTP {st.split()[-1]} "
+                f"em http://127.0.0.1:{porta}/readyz (não saudável)"
+            )
+        else:
+            print(
+                f"  {_c('33', '!')}       headroom-proxy  NÃO está respondendo em "
+                f"http://127.0.0.1:{porta}/readyz"
+            )
+        print(f"        {acao}")
+
     if faltando:
         print(
             f"\n  {_c('33', 'Ausentes:')} {', '.join(faltando)} — rode o instalador "
