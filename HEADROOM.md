@@ -26,10 +26,17 @@ headroom doctor
 > "${HEADROOM_PORT:-48731}"`.
 
 Estes comandos são seus, não do `install.sh`. O instalador do ai-config **não**
-roda `headroom init` nem sobe o proxy — ele só escreve a seção
-`[model_providers.headroom]` no `~/.codex/config.toml` e reporta a presença do
-binário em `./install.sh --doctor`. O roteamento em si é registrado pelo próprio
-`headroom init`, nos arquivos locais de cada agente.
+roda `headroom init` nem sobe o proxy: ele escreve a seção
+`[model_providers.headroom]`, instala o hook portátil do Codex e, quando o
+executável está disponível, garante que a deploy `init-user` esteja
+`running`/`Healthy: yes` usando `headroom install start --profile init-user` se
+necessário. Se Headroom não estiver instalado, a configuração continua sendo
+aplicada e o instalador emite um aviso; use `./install.sh --doctor` para
+conferir.
+
+O hook `SessionStart` chama o mesmo healthcheck antes de garantir o marker
+`headroom-init-codex`. O timeout é de 60 segundos para acomodar o cold start de
+5–10 segundos no Windows.
 
 ## Apontando os agentes para o proxy
 

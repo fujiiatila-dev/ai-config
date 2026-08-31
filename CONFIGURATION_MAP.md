@@ -15,6 +15,8 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `shared/WORKFLOW.md` | `~/.gemini/WORKFLOW.md` | bloco `ai-config` |
 | `adapters/codex/AGENTS.md` | `~/.codex/AGENTS.md` | bloco `ai-config` |
 | `adapters/codex/config.toml.example` | `~/.codex/config.toml` | TOML, por seção/chave |
+| `adapters/codex/hooks.json` | `~/.codex/hooks.json` | JSON, hooks unidos por matcher/comando |
+| `tools/headroom_healthcheck.py` | `~/.codex/headroom_healthcheck.py` | arquivo (pergunta se diferir) |
 | `adapters/gemini/GEMINI.md` | `~/.gemini/GEMINI.md` | bloco `ai-config` |
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
 | `versions.json` | — | lido por `--doctor` como referência |
@@ -53,6 +55,8 @@ carregue caminho absoluto de ninguém:
 | `{{PYTHON}}` | caminho do `python3`/`python` encontrado |
 | `{{NODE}}` | caminho do `node` encontrado |
 | `{{CLAUDE_HOME}}` | `CLAUDE_CONFIG_DIR` ou `~/.claude` |
+| `{{CODEX_HOME}}` | `CODEX_HOME` ou `~/.codex` |
+| `{{HEADROOM}}` | caminho do executável Headroom encontrado |
 | `{{HEADROOM_PORT}}` | `HEADROOM_PORT` ou `48731` |
 
 Sempre com barra normal, inclusive no Windows — Node, Python e o shell aceitam.

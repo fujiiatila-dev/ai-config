@@ -178,6 +178,13 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
     out = copy.deepcopy(local)
     by_matcher = {e.get("matcher"): e for e in out}
 
+    def is_recovery(command: str) -> bool:
+        return "headroom_healthcheck.py" in command.replace("\\", "/").lower()
+
+    def is_headroom_ensure(command: str) -> bool:
+        normalized = command.replace("\\", "/").lower()
+        return "headroom" in normalized and "init hook ensure" in normalized
+
     for entry in repo:
         m = entry.get("matcher")
         if m in by_matcher:
@@ -189,7 +196,21 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
                     None,
                 )
                 if gemeo is None:
-                    tgt.setdefault("hooks", []).append(h)
+                    hooks = tgt.setdefault("hooks", [])
+                    before_ensure = None
+                    if is_recovery(h.get("command", "")):
+                        before_ensure = next(
+                            (
+                                i
+                                for i, item in enumerate(hooks)
+                                if is_headroom_ensure(item.get("command", ""))
+                            ),
+                            None,
+                        )
+                    if before_ensure is None:
+                        hooks.append(copy.deepcopy(h))
+                    else:
+                        hooks.insert(before_ensure, copy.deepcopy(h))
                     add(f"{path} :: {m} (+comando)")
                 elif gemeo.get("command") != h.get("command"):
                     # Mesmo script, invocação diferente: escolher uma só.
@@ -478,6 +499,20 @@ def install_tree(src: Path, dest: Path, ctx: Ctx, rotulo: str) -> None:
             keep(f"{d}")
 
 
+def install_file(src: Path, dest: Path, ctx: Ctx, rotulo: str) -> None:
+    """Instala um arquivo único preservando a política de conflito."""
+    if not dest.exists():
+        ctx.copy(src, dest)
+        add(f"{rotulo} (criado)")
+    elif filecmp.cmp(src, dest, shallow=False):
+        keep(f"{rotulo} (já em dia)")
+    elif ctx.choose(str(dest), "manter o seu", "usar o do repo") == "repo":
+        ctx.copy(src, dest)
+        add(f"{rotulo} (atualizado)")
+    else:
+        keep(f"{rotulo} (mantido como está)")
+
+
 # ── descoberta de binários ───────────────────────────────────────────────────
 def persistent_windows_paths() -> list[str]:
     """Read PATH entries persisted after this process was started."""
@@ -697,6 +732,30 @@ def install_recommended_tools() -> bool:
 
 
 # ── comandos ─────────────────────────────────────────────────────────────────
+def ensure_headroom_deploy(ctx: Ctx, executable: str | None, profile: str = "init-user") -> bool:
+    """Run the portable Headroom healthcheck after configuration sync."""
+    if not executable:
+        warn("Headroom não está disponível; deploy init-user não verificada")
+        return False
+    if ctx.dry_run:
+        print(f"  [dry-run] verificaria a deploy Headroom '{profile}' e faria start se necessário")
+        return True
+
+    script = ROOT / "tools" / "headroom_healthcheck.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--headroom", executable, "--profile", profile],
+            timeout=75,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        warn(f"healthcheck Headroom falhou: {exc}")
+        return False
+    if result.returncode != 0:
+        warn(f"deploy Headroom '{profile}' não ficou ativa (código {result.returncode})")
+        return False
+    return True
+
+
 def proxy_status(porta: str) -> str:
     """Probe real do proxy Headroom: 'ok', 'http <status>' ou 'fora'."""
     # Sem ProxyHandler: o opener padrão do urllib respeita proxy de ambiente e
@@ -775,6 +834,7 @@ def cmd_install(args) -> int:
 
     py = which("python3", "python") or sys.executable
     node = which("node") or "node"
+    headroom = which("headroom", "headroom.exe") or "headroom"
 
     if ctx.dry_run:
         print(_c("1;33", "\n== simulação (--dry-run): nada será escrito =="))
@@ -795,6 +855,8 @@ def cmd_install(args) -> int:
         "PYTHON": fwd(py),
         "NODE": fwd(node),
         "CLAUDE_HOME": fwd(claude_home),
+        "CODEX_HOME": fwd(codex_home),
+        "HEADROOM": fwd(headroom),
         "HEADROOM_PORT": porta,
     }
 
@@ -825,6 +887,13 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    install_file(
+        ROOT / "tools/headroom_healthcheck.py",
+        codex_home / "headroom_healthcheck.py",
+        ctx,
+        "Codex healthcheck Headroom",
+    )
+    install_json(ROOT / "adapters/codex/hooks.json", codex_home / "hooks.json", ctx, subst)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
@@ -832,6 +901,9 @@ def cmd_install(args) -> int:
 
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
+
+    head("Headroom")
+    ensure_headroom_deploy(ctx, which("headroom", "headroom.exe"))
 
     head("Resumo")
     if ctx.dry_run:

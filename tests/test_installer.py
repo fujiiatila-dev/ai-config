@@ -21,6 +21,12 @@ SPEC = importlib.util.spec_from_file_location("aiconfig_under_test", MODULE_PATH
 assert SPEC and SPEC.loader
 AICONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AICONFIG)
+HEALTH_SPEC = importlib.util.spec_from_file_location(
+    "headroom_healthcheck_under_test", ROOT / "tools" / "headroom_healthcheck.py"
+)
+assert HEALTH_SPEC and HEALTH_SPEC.loader
+HEALTH = importlib.util.module_from_spec(HEALTH_SPEC)
+HEALTH_SPEC.loader.exec_module(HEALTH)
 
 
 def write_executable(path: Path, body: str) -> None:
@@ -92,6 +98,108 @@ class DoctorTests(unittest.TestCase):
             version = AICONFIG.tool_version("gitleaks")
 
         self.assertEqual(version, "8.30.1")
+
+
+class HeadroomHealthcheckTests(unittest.TestCase):
+    def test_healthy_deployment_does_not_start(self) -> None:
+        status = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
+        )
+        with mock.patch.object(HEALTH.subprocess, "run", return_value=status) as run:
+            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
+        run.assert_called_once_with(
+            ["headroom", "install", "status", "--profile", "init-user"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+        )
+
+    def test_stopped_deployment_starts_and_is_verified(self) -> None:
+        stopped = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: stopped\nHealthy: no\n", ""
+        )
+        started = subprocess.CompletedProcess(["headroom"], 0, "", "")
+        healthy = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
+        )
+        with mock.patch.object(
+            HEALTH.subprocess, "run", side_effect=[stopped, started, healthy]
+        ) as run:
+            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
+        self.assertEqual(run.call_args_list[1].args[0], [
+            "headroom", "install", "start", "--profile", "init-user"
+        ])
+        self.assertEqual(run.call_count, 3)
+
+    def test_unhealthy_running_deployment_is_restarted(self) -> None:
+        unhealthy = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: running\nHealthy: no\n", ""
+        )
+        started = subprocess.CompletedProcess(["headroom"], 0, "", "")
+        healthy = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
+        )
+        with mock.patch.object(
+            HEALTH.subprocess, "run", side_effect=[unhealthy, started, healthy]
+        ) as run:
+            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
+        self.assertEqual(run.call_count, 3)
+
+    def test_failed_start_returns_false(self) -> None:
+        stopped = subprocess.CompletedProcess(
+            ["headroom"], 0, "Status: stopped\nHealthy: no\n", ""
+        )
+        failed = subprocess.CompletedProcess(["headroom"], 7, "", "failed")
+        with mock.patch.object(
+            HEALTH.subprocess, "run", side_effect=[stopped, failed]
+        ):
+            self.assertFalse(HEALTH.ensure_deployment("headroom", "init-user"))
+
+    def test_dry_run_never_runs_headroom(self) -> None:
+        with mock.patch.object(HEALTH.subprocess, "run") as run:
+            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user", dry_run=True))
+        run.assert_not_called()
+
+    def test_missing_headroom_is_non_fatal_for_standalone_check(self) -> None:
+        with mock.patch.object(HEALTH.shutil, "which", return_value=None):
+            self.assertEqual(HEALTH.main([]), 0)
+
+
+class HookMergeTests(unittest.TestCase):
+    def test_recovery_hook_is_inserted_before_legacy_ensure(self) -> None:
+        args = SimpleNamespace(
+            dry_run=True, prefer_repo=False, keep_existing=False, yes=False
+        )
+        ctx = AICONFIG.Ctx(args)
+        local = [{
+            "matcher": "startup|resume",
+            "hooks": [{
+                "type": "command",
+                "command": "{{CODEX_HOME}}/Scripts/headroom.EXE init hook ensure --profile init-user --marker headroom-init-codex",
+                "timeout": 15,
+            }],
+        }]
+        repo = [{
+            "matcher": "startup|resume",
+            "hooks": [{
+                "type": "command",
+                "command": '"{{PYTHON}}" "{{CODEX_HOME}}/headroom_healthcheck.py" --headroom "{{HEADROOM}}" --profile init-user --ensure --marker headroom-init-codex',
+                "timeout": 60,
+            }],
+        }]
+        merged = AICONFIG.merge_hook_event(local, repo, ctx, "hooks.SessionStart")
+        commands = [hook["command"] for hook in merged[0]["hooks"]]
+        self.assertIn("headroom_healthcheck.py", commands[0])
+        self.assertIn("init hook ensure", commands[1])
+
+    def test_codex_hook_uses_portable_placeholders_and_long_timeout(self) -> None:
+        hooks = json.loads((ROOT / "adapters" / "codex" / "hooks.json").read_text())
+        hook = hooks["hooks"]["SessionStart"][0]["hooks"][0]
+        self.assertEqual(hook["timeout"], 60)
+        self.assertIn("{{PYTHON}}", hook["command"])
+        self.assertIn("{{CODEX_HOME}}", hook["command"])
+        self.assertNotRegex(hook["command"], r"[A-Za-z]:[/\\]")
 
 
 class ToolInstallationTests(unittest.TestCase):
@@ -168,10 +276,16 @@ class ToolInstallationTests(unittest.TestCase):
                     "install_recommended_tools",
                     return_value=True,
                 ) as install,
+                mock.patch.object(
+                    AICONFIG,
+                    "ensure_headroom_deploy",
+                    return_value=True,
+                ) as headroom,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(AICONFIG.cmd_install(args), 0)
             install.assert_called_once_with()
+            headroom.assert_called_once()
 
     def test_skip_tools_and_dry_run_do_not_run_installers(self) -> None:
         for dry_run, skip_tools in ((True, False), (False, True)):
@@ -194,10 +308,12 @@ class ToolInstallationTests(unittest.TestCase):
                     with (
                         mock.patch.dict(os.environ, env),
                         mock.patch.object(AICONFIG, "install_recommended_tools") as install,
+                        mock.patch.object(AICONFIG, "ensure_headroom_deploy") as headroom,
                         contextlib.redirect_stdout(io.StringIO()),
                     ):
                         self.assertEqual(AICONFIG.cmd_install(args), 0)
                     install.assert_not_called()
+                    headroom.assert_called_once()
 
 
 @unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")

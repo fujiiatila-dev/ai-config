@@ -91,16 +91,16 @@ Divergências geram aviso, não impedem a instalação.
 | Ferramenta | Versão ref. |
 | --- | --- |
 | Python | 3.14.4 |
-| Node.js | 24.15.0 |
-| RTK | 0.44.1 |
-| Headroom | 0.34.0 |
+| Node.js | 24.20.0 |
+| RTK | 0.46.0 |
+| Headroom | 0.37.0 |
 | aurum | 0.4.0 |
-| Claude Code | 2.1.220 |
-| Codex CLI | 0.146.1 |
-| OpenSpec | 1.7.0 |
-| Semgrep | 1.172.0 |
+| Claude Code | 2.1.251 |
+| Codex CLI | 0.151.0 |
+| OpenSpec | 1.11.0 |
+| Semgrep | 1.175.0 |
 | Gitleaks | 8.30.1 |
-| Trivy | 0.72.0 |
+| Trivy | 0.74.0 |
 | Codex Security | 0.1.1 |
 
 ## O que fica no repositório e o que não fica
