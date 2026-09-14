@@ -22,10 +22,17 @@ que será construído. O fluxo é:
 # Certifique-se de ter o OpenSpec instalado globalmente
 npm install -g @fission-ai/openspec@latest
 
-# Inicialize no projeto (uma vez)
+# Inicialize no projeto (uma vez), usando o cliente em execução
 cd <projeto>
-openspec init --tools claude
+openspec init --tools claude  # Claude Code
+openspec init --tools codex   # Codex
+openspec init --tools gemini  # Gemini/Antigravity
 ```
+
+Use somente a linha correspondente ao cliente atual. Os comandos equivalentes
+em PowerShell são os mesmos; apenas a definição de variáveis de ambiente muda
+de sintaxe. No Claude Code, os comandos `/opsx:*` ficam disponíveis após o
+`init`; no Codex e no Gemini, use o fluxo equivalente suportado pelo cliente.
 
 ### Ciclo propose → design → tasks → apply → archive
 
@@ -37,6 +44,26 @@ openspec init --tools claude
    planejamento sem mexer no código, se algo mudou.
 4. **`/opsx:archive`** — Valida conclusão, sincroniza delta specs com o
    `specs/` principal e arquiva o change folder.
+
+Para sincronizar este repositório, o instalador usa o mesmo motor nos dois
+shells:
+
+```bash
+./install.sh --dry-run
+./install.sh --update-tools --harden-codex --keep-existing
+./install.sh --doctor
+```
+
+```powershell
+.\install.ps1 --dry-run
+.\install.ps1 --update-tools --harden-codex --keep-existing
+.\install.ps1 --doctor
+```
+
+`--update-tools` é opt-in e atualiza somente OpenSpec, Semgrep, Gitleaks e
+Trivy para as referências de `versions.json`. `--harden-codex` aplica o
+baseline de sandbox/aprovação com backup; `--skip-tools` e `--dry-run` não
+executam gerenciadores de pacotes.
 
 Os artefatos ficam em `openspec/`:
 
@@ -62,6 +89,13 @@ Antes de encerrar uma entrega, rode a auditoria a partir da raiz do projeto com
 `PYTHONUTF8=1`:
 
 ```bash
+PYTHONUTF8=1 aurum check .
+```
+
+No PowerShell:
+
+```powershell
+$env:PYTHONUTF8 = '1'
 aurum check .
 ```
 
@@ -93,24 +127,46 @@ Cada agente tem sua ferramenta de auditoria de segurança primária:
 
 **Tríade de verificações manuais** (qualquer agente, antes de entregar):
 
-1. **Segredos**: `gitleaks detect --source .` — varre todo o repo por tokens,
-   chaves e credenciais acidentalmente commitados.
-2. **Vulnerabilidades SAST**: `semgrep scan --json .` — analisa o código-fonte
-   por padrões inseguros. Use `--config=auto` para regras recomendadas.
-3. **Dependências**: `trivy fs --format json .` — identifica CVEs em
-   dependências (`package.json`, `requirements.txt`, etc.). Alternativa:
-   `npm audit` / `pip audit`.
+### Bash
+
+```bash
+gitleaks detect --source .
+semgrep scan --config=auto --json .
+trivy fs --format json --scanners vuln .
+```
+
+### PowerShell
+
+```powershell
+gitleaks detect --source .
+semgrep scan --config=auto --json .
+trivy fs --format json --scanners vuln .
+```
+
+Esses comandos varrem, respectivamente, segredos, padrões SAST e CVEs em
+dependências (`package.json`, `requirements.txt` etc.). Use `npm audit` ou
+`pip audit` como alternativa para o último item.
 
 ### Codex Security (OpenAI)
 
 Para o agente Codex, com uma chave `OPENAI_API_KEY` configurada:
 
+### Bash
+
 ```bash
+BASE_SHA=origin/main
 npx @openai/codex-security scan . \
-  --diff <base-sha> \
+  --diff "$BASE_SHA" \
   --json \
   --fail-on-severity high \
   --output-dir ./codex-security-results
+```
+
+### PowerShell
+
+```powershell
+$baseSha = 'origin/main'
+npx @openai/codex-security scan . --diff $baseSha --json --fail-on-severity high --output-dir ./codex-security-results
 ```
 
 Saídas: JSON estruturado, SARIF (integrável com GitHub Code Scanning) e

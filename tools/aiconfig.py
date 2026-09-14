@@ -11,6 +11,7 @@ Regras invioláveis:
 
 Uso:
   python3 tools/aiconfig.py install [--dry-run] [--keep-existing|--prefer-repo] [--yes]
+    [--skip-tools] [--update-tools] [--harden-codex]
   python3 tools/aiconfig.py doctor
 """
 from __future__ import annotations
@@ -23,15 +24,27 @@ import json
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BEGIN = "<!-- ai-config:begin -->"
 END = "<!-- ai-config:end -->"
+DEFAULT_HEADROOM_PORT = 48731
+VERSION_PROBE_TIMEOUT_SEC = 3.0
+NPM_ROOT_TIMEOUT_SEC = 3.0
+
+MANAGED_TOOL_VERSION_KEYS = {
+    "openspec": "openspec",
+    "semgrep": "semgrep",
+    "gitleaks": "gitleaks",
+    "trivy": "trivy",
+}
 
 # ── saída ────────────────────────────────────────────────────────────────────
 _TTY = sys.stdout.isatty()
@@ -121,6 +134,8 @@ class Ctx:
             return
         rel = str(path).lstrip("/").replace(":", "_")
         dest = self.backup_dir / rel
+        if dest.exists():
+            return
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dest)
 
@@ -309,7 +324,10 @@ def install_markdown(src: Path, dest: Path, ctx: Ctx) -> None:
     cur = dest.read_text(encoding="utf-8")
     if BEGIN in cur and END in cur:
         novo = re.sub(
-            re.escape(BEGIN) + r".*?" + re.escape(END), block.rstrip("\n"), cur, flags=re.S
+            re.escape(BEGIN) + r".*?" + re.escape(END),
+            lambda _match: block.rstrip("\n"),
+            cur,
+            flags=re.S,
         )
         if novo == cur:
             keep(f"{dest} (já em dia)")
@@ -517,25 +535,78 @@ def which(*names: str) -> str | None:
     return None
 
 
+def _stop_version_probe(process: subprocess.Popen) -> None:
+    """Stop a version probe and its descendants without leaving pipes open."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _probe_version(exe: str, args: tuple[str, ...], timeout: float) -> tuple[int, str, str]:
+    """Run one version probe in an isolated process group."""
+    options = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "errors": "replace",
+    }
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        options["start_new_session"] = True
+
+    process = subprocess.Popen([exe, *args], **options)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _stop_version_probe(process)
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return process.returncode, stdout, stderr
+
+
 def tool_version(exe: str) -> str | None:
-    for args in (("--version",), ("version",), ("-V",)):
+    """Read a CLI version without allowing one broken executable to hang doctor."""
+    deadline = time.monotonic() + VERSION_PROBE_TIMEOUT_SEC
+    for args in (("--version",), ("version",)):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             # errors='replace': binários de terceiros (ex.: stub python3 da
             # Microsoft Store) podem emitir texto fora do utf-8 e o decode
             # falharia em thread, fora do alcance deste try/except.
-            r = subprocess.run(
-                [exe, *args],
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=8,
-            )
-            if r.returncode != 0:
+            returncode, stdout, stderr = _probe_version(exe, args, remaining)
+            if returncode != 0:
                 continue
-            out = (r.stdout + r.stderr).strip().splitlines()
+            out = (stdout + stderr).strip().splitlines()
             if out:
                 m = re.search(r"\d+\.\d+(\.\d+)?", out[0])
                 return m.group(0) if m else out[0][:40]
+        except subprocess.TimeoutExpired:
+            break
         except Exception:
             continue
     return None
@@ -555,7 +626,7 @@ def node_package_version(package_name: str) -> str | None:
                 [npm, "root", "-g"],
                 capture_output=True,
                 text=True,
-                timeout=8,
+                timeout=NPM_ROOT_TIMEOUT_SEC,
             )
             if result.returncode == 0 and result.stdout.strip():
                 roots.append(Path(result.stdout.strip()))
@@ -599,14 +670,56 @@ def doctor_checks() -> list[tuple[str, str, tuple[str, ...], str, str | None]]:
     ]
 
 
-def tool_install_command(tool_name: str) -> list[str] | None:
-    """Build an install command using only package managers already available."""
+def _tool_reference(tool_name: str) -> str | None:
+    key = MANAGED_TOOL_VERSION_KEYS.get(tool_name)
+    if not key:
+        return None
+    try:
+        versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
+        version = versions.get("tools", {}).get(key)
+    except (OSError, ValueError, TypeError):
+        return None
+    return version if isinstance(version, str) and version else None
+
+
+def tool_install_command(tool_name: str, upgrade: bool = False) -> list[str] | None:
+    """Build an install/upgrade command using available package managers."""
+    reference = _tool_reference(tool_name)
+
     if tool_name == "openspec":
         npm = which("npm")
-        return [npm, "install", "-g", "@fission-ai/openspec@latest"] if npm else None
+        if not npm:
+            return None
+        package = f"@fission-ai/openspec@{reference}" if reference else "@fission-ai/openspec"
+        return [
+            npm,
+            "install",
+            "-g",
+            "--no-audit",
+            "--no-fund",
+            "--fetch-retries=0",
+            "--fetch-timeout=15000",
+            package,
+        ]
 
     if tool_name == "semgrep":
-        return [sys.executable, "-m", "pip", "install", "--user", "semgrep"]
+        package = f"semgrep=={reference}" if reference else "semgrep"
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--disable-pip-version-check",
+            "--retries",
+            "0",
+            "--timeout",
+            "15",
+        ]
+        if upgrade:
+            command.append("--upgrade")
+        command.append(package)
+        return command
 
     packages = {
         "gitleaks": {
@@ -626,22 +739,33 @@ def tool_install_command(tool_name: str) -> list[str] | None:
 
     winget = which("winget")
     if winget:
-        return [
+        command = [
             winget,
-            "install",
+            "upgrade" if upgrade else "install",
             "--id",
             package["winget"],
             "--exact",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-            "--silent",
         ]
+        if reference:
+            command.extend(["--version", reference])
+        command.extend(
+            [
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--silent",
+            ]
+        )
+        return command
     choco = which("choco")
     if choco:
-        return [choco, "install", package["choco"], "-y", "--no-progress"]
+        command = [choco, "upgrade" if upgrade else "install", package["choco"]]
+        if reference:
+            command.extend(["--version", reference])
+        command.extend(["-y", "--no-progress"])
+        return command
     brew = which("brew")
     if brew:
-        return [brew, "install", package["brew"]]
+        return [brew, "upgrade" if upgrade else "install", package["brew"]]
     return None
 
 
@@ -654,8 +778,8 @@ def install_command_succeeded(command: list[str], returncode: int) -> bool:
     return executable in {"winget", "winget.exe"} and unsigned_code == 0x8A15002B
 
 
-def install_recommended_tools() -> bool:
-    """Install recommended tools when missing; keep configuration usable on failure."""
+def install_recommended_tools(update: bool = False) -> bool:
+    """Install missing tools, or explicitly update them when requested."""
     head("Ferramentas recomendadas")
     complete = True
     notes = {
@@ -665,17 +789,23 @@ def install_recommended_tools() -> bool:
         "trivy": "Trivy (dependências)",
     }
     for tool_name, description in notes.items():
-        if which(tool_name):
+        installed = which(tool_name)
+        if installed and not update:
             keep(f"{description} já instalado")
             continue
 
-        command = tool_install_command(tool_name)
+        if installed and update:
+            command = tool_install_command(tool_name, upgrade=True)
+        else:
+            command = tool_install_command(tool_name)
         if not command:
-            warn(f"{description}: nenhum gerenciador compatível disponível")
+            action = "atualizar" if installed and update else "instalar"
+            warn(f"{description}: nenhum gerenciador compatível disponível para {action}")
             complete = False
             continue
 
-        add(f"instalando {description}...")
+        action = "atualizando" if installed and update else "instalando"
+        add(f"{action} {description}...")
         try:
             result = subprocess.run(command, timeout=600)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -709,6 +839,204 @@ def proxy_status(porta: str) -> str:
         return "fora"
 
 
+def configured_headroom_port() -> str:
+    """Return a validated port from the environment or the version catalog."""
+    if os.environ.get("HEADROOM_PORT", "").strip():
+        raw = os.environ["HEADROOM_PORT"].strip()
+    else:
+        try:
+            versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
+            raw = str(versions.get("runtime", {}).get("headroom_port", DEFAULT_HEADROOM_PORT))
+        except (OSError, ValueError, TypeError):
+            raw = str(DEFAULT_HEADROOM_PORT)
+
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError("HEADROOM_PORT deve ser um número inteiro entre 1 e 65535") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("HEADROOM_PORT deve estar entre 1 e 65535")
+    return str(port)
+
+
+def _toml_unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+            if isinstance(decoded, str):
+                return decoded
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return value[1:-1]
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
+def _project_path_from_section(section: str) -> str | None:
+    match = re.fullmatch(r"\[projects\.(?P<quote>['\"])(?P<path>.*)(?P=quote)\]", section.strip())
+    if not match:
+        return None
+    quote = match.group("quote")
+    return _toml_unquote(f"{quote}{match.group('path')}{quote}")
+
+
+def _normalized_path(value: str) -> str:
+    normalized = os.path.normpath(value.replace("\\", "/"))
+    return os.path.normcase(normalized.rstrip("/"))
+
+
+def codex_security_findings(config_path: Path) -> list[str]:
+    """Inspect only portable Codex policy signals; never mutate the file."""
+    if not config_path.exists():
+        return []
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"não foi possível ler o config.toml ({exc})"]
+
+    sections = _toml_sections(raw)
+    root = _toml_keys(sections.get("", []))
+    windows = _toml_keys(sections.get("[windows]", []))
+    findings: list[str] = []
+
+    sandbox = _toml_unquote(root.get("sandbox_mode", ""))
+    if not sandbox:
+        findings.append("sandbox_mode não está definido; fixe workspace-write ou read-only")
+    elif sandbox not in {"workspace-write", "read-only"}:
+        findings.append(f"sandbox_mode={sandbox!r} é mais permissivo que o baseline")
+
+    approval = _toml_unquote(root.get("approval_policy", ""))
+    if not approval:
+        findings.append("approval_policy não está definida; use on-request")
+    elif approval != "on-request":
+        findings.append(f"approval_policy={approval!r}; o baseline usa on-request")
+
+    reviewer = _toml_unquote(root.get("approvals_reviewer", ""))
+    if reviewer and reviewer != "user":
+        findings.append(f"approvals_reviewer={reviewer!r}; revise quem aprova ações")
+
+    native_sandbox = _toml_unquote(windows.get("sandbox", ""))
+    if native_sandbox == "elevated":
+        findings.append("windows.sandbox=elevated concede sandbox nativa elevada")
+    elif not native_sandbox:
+        findings.append("windows.sandbox não está definido; o baseline usa unelevated")
+
+    home = _normalized_path(str(Path.home()))
+    for section, lines in sections.items():
+        project_path = _project_path_from_section(section)
+        if not project_path or _normalized_path(project_path) != home:
+            continue
+        project_keys = _toml_keys(lines)
+        if _toml_unquote(project_keys.get("trust_level", "")) == "trusted":
+            findings.append("a raiz do perfil do usuário está marcada como trusted")
+            break
+    return findings
+
+
+def _set_toml_key(text: str, section: str, key: str, value: str) -> str:
+    """Replace or append one simple TOML key while preserving other content."""
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+    if section:
+        try:
+            section_start = next(i for i, line in enumerate(lines) if line.strip() == section)
+        except StopIteration:
+            base = text.rstrip("\r\n")
+            separator = newline * 2 if base else ""
+            return f"{base}{separator}{section}{newline}{key} = {value}{newline}"
+        content_start = section_start + 1
+        content_end = len(lines)
+        for i in range(content_start, len(lines)):
+            if lines[i].strip().startswith("["):
+                content_end = i
+                break
+    else:
+        content_start = 0
+        content_end = len(lines)
+        for i, line in enumerate(lines):
+            if line.strip().startswith("["):
+                content_end = i
+                break
+
+    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=\s*).*$")
+    for i in range(content_start, content_end):
+        if pattern.match(lines[i]):
+            lines[i] = pattern.sub(rf"\g<1>{value}", lines[i], count=1)
+            return newline.join(lines) + newline
+
+    lines.insert(content_end, f"{key} = {value}")
+    return newline.join(lines) + newline
+
+
+def _remove_broad_home_trust(text: str) -> tuple[str, bool, bool]:
+    """Remove only an exact home trust section containing trust_level alone."""
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+    headers = [i for i, line in enumerate(lines) if line.strip().startswith("[")]
+    home = _normalized_path(str(Path.home()))
+    removed = False
+    skipped = False
+
+    for index in reversed(headers):
+        section = lines[index].strip()
+        project_path = _project_path_from_section(section)
+        if not project_path or _normalized_path(project_path) != home:
+            continue
+        end = len(lines)
+        for next_header in headers:
+            if next_header > index:
+                end = next_header
+                break
+        keys = _toml_keys(lines[index + 1 : end])
+        meaningful = [line.strip() for line in lines[index + 1 : end] if line.strip() and not line.strip().startswith("#")]
+        if set(keys) == {"trust_level"} and _toml_unquote(keys["trust_level"]) == "trusted" and len(meaningful) == 1:
+            del lines[index:end]
+            removed = True
+        else:
+            skipped = True
+
+    if not removed:
+        return text, False, skipped
+    trailing = newline if text.endswith(("\n", "\r")) else ""
+    return newline.join(lines) + trailing, True, skipped
+
+
+def harden_codex_config(config_path: Path, ctx: Ctx) -> None:
+    """Apply the explicit Codex baseline without rewriting unrelated TOML."""
+    if not config_path.exists():
+        warn(f"{config_path}: não existe; hardening não aplicado")
+        return
+    try:
+        original = config_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        warn(f"{config_path}: não foi possível ler para hardening ({exc})")
+        return
+
+    updated = original
+    for section, key, value in (
+        ("", "sandbox_mode", '"workspace-write"'),
+        ("", "approval_policy", '"on-request"'),
+        ("", "approvals_reviewer", '"user"'),
+        ("[windows]", "sandbox", '"unelevated"'),
+    ):
+        updated = _set_toml_key(updated, section, key, value)
+
+    updated, removed, skipped = _remove_broad_home_trust(updated)
+    if skipped:
+        warn(f"{config_path}: confiança ampla preservada porque a seção contém outras chaves")
+    if updated == original:
+        keep(f"{config_path} (baseline já aplicado)")
+        return
+
+    ctx.write(config_path, updated)
+    details = "baseline aplicado"
+    if removed:
+        details += "; confiança ampla da raiz removida"
+    add(f"{config_path} ({details})")
+
+
 def cmd_doctor(_args) -> int:
     versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
     esperado = versions.get("tools", {})
@@ -729,33 +1057,51 @@ def cmd_doctor(_args) -> int:
             marca = _c("2", f" (referência do repo: {ref})")
         print(f"  {_c('32', 'ok')}       {nome:<10} {v}{marca}")
 
-    porta = os.environ.get("HEADROOM_PORT", str(versions.get("runtime", {}).get("headroom_port", 48731)))
-    print(f"\n  HEADROOM_PORT = {porta}")
+    try:
+        porta = configured_headroom_port()
+    except ValueError as exc:
+        porta = None
+        print(f"\n  {_c('33', '!')}       HEADROOM_PORT inválida — {exc}")
 
-    # Probe real da porta: um proxy configurado mas fora do ar derruba o Codex
-    # com erro críptico de stream. Aqui o motivo aparece na hora.
-    st = proxy_status(porta)
-    if st == "ok":
-        print(
-            f"  {_c('32', 'ok')}       headroom-proxy  respondendo em "
-            f"http://127.0.0.1:{porta}/readyz"
-        )
-    else:
-        if which("headroom"):
-            acao = f"rode: headroom proxy --port {porta}  (ou o atalho de inicialização)"
-        else:
-            acao = f"instale o headroom (veja README.md) e rode: headroom proxy --port {porta}"
-        if st.startswith("http"):
+    if porta:
+        print(f"\n  HEADROOM_PORT = {porta}")
+
+        # Probe real da porta: um proxy configurado mas fora do ar derruba o Codex
+        # com erro críptico de stream. Aqui o motivo aparece na hora.
+        st = proxy_status(porta)
+        if st == "ok":
             print(
-                f"  {_c('33', '!')}       headroom-proxy  respondeu HTTP {st.split()[-1]} "
-                f"em http://127.0.0.1:{porta}/readyz (não saudável)"
-            )
-        else:
-            print(
-                f"  {_c('33', '!')}       headroom-proxy  NÃO está respondendo em "
+                f"  {_c('32', 'ok')}       headroom-proxy  respondendo em "
                 f"http://127.0.0.1:{porta}/readyz"
             )
-        print(f"        {acao}")
+        else:
+            if which("headroom"):
+                acao = f"rode: headroom proxy --port {porta}  (ou o atalho de inicialização)"
+            else:
+                acao = f"instale o headroom (veja README.md) e rode: headroom proxy --port {porta}"
+            if st.startswith("http"):
+                print(
+                    f"  {_c('33', '!')}       headroom-proxy  respondeu HTTP {st.split()[-1]} "
+                    f"em http://127.0.0.1:{porta}/readyz (não saudável)"
+                )
+            else:
+                print(
+                    f"  {_c('33', '!')}       headroom-proxy  NÃO está respondendo em "
+                    f"http://127.0.0.1:{porta}/readyz"
+                )
+            print(f"        {acao}")
+
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    codex_config = codex_home / "config.toml"
+    findings = codex_security_findings(codex_config)
+    if codex_config.exists():
+        print("\n  Baseline Codex")
+        if findings:
+            for finding in findings:
+                print(f"  {_c('33', '!')}       codex       {finding}")
+            print("        use --harden-codex para aplicar defaults com backup")
+        else:
+            print("  ok       codex       baseline de sandbox/aprovação detectado")
 
     if faltando:
         print(
@@ -771,7 +1117,11 @@ def cmd_install(args) -> int:
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
     rtk_home = Path(os.environ.get("RTK_CONFIG_DIR", Path.home() / ".config" / "rtk"))
-    porta = os.environ.get("HEADROOM_PORT", "48731")
+    try:
+        porta = configured_headroom_port()
+    except ValueError as exc:
+        warn(str(exc))
+        return 2
 
     py = which("python3", "python") or sys.executable
     node = which("node") or "node"
@@ -825,6 +1175,8 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    if getattr(args, "harden_codex", False):
+        harden_codex_config(codex_home / "config.toml", ctx)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
@@ -847,7 +1199,10 @@ def cmd_install(args) -> int:
     elif args.skip_tools:
         print("  (--skip-tools: ferramentas não instaladas)")
     else:
-        install_recommended_tools()
+        if getattr(args, "update_tools", False):
+            install_recommended_tools(update=True)
+        else:
+            install_recommended_tools()
 
     print("  rode  ./install.sh --doctor  para conferir as ferramentas externas.")
     return 0
@@ -864,6 +1219,16 @@ def main() -> int:
         "--skip-tools",
         action="store_true",
         help="sincroniza apenas configurações, sem instalar ferramentas",
+    )
+    i.add_argument(
+        "--update-tools",
+        action="store_true",
+        help="atualiza ferramentas gerenciadas para as referências do repo",
+    )
+    i.add_argument(
+        "--harden-codex",
+        action="store_true",
+        help="aplica defaults seguros ao Codex e remove confiança ampla exata",
     )
     g = i.add_mutually_exclusive_group()
     g.add_argument("--keep-existing", action="store_true", help="conflito: mantém o local")

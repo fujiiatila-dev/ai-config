@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "last_verified": "2026-08-06",
+  "last_verified": "2026-09-11",
   "_nota": "Referências para ./install.sh --doctor. Divergência gera aviso, nunca erro.",
   "tools": {
     "python": "3.14.4",
@@ -14,7 +14,7 @@
     "semgrep": "1.172.0",
     "gitleaks": "8.30.1",
     "trivy": "0.72.0",
-    "codex_security": "0.1.1"
+    "codex_security": "0.1.6"
   },
   "runtime": {
     "headroom_port": 48731,

@@ -17,7 +17,19 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `adapters/codex/config.toml.example` | `~/.codex/config.toml` | TOML, por seção/chave |
 | `adapters/gemini/GEMINI.md` | `~/.gemini/GEMINI.md` | bloco `ai-config` |
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
-| `versions.json` | — | lido por `--doctor` como referência |
+| `versions.json` | — | lido por `--doctor` e por `--update-tools` como catálogo |
+
+## Operação segura
+
+`--update-tools` atualiza somente OpenSpec, Semgrep, Gitleaks e Trivy, usando
+as versões declaradas no catálogo. Sem essa flag, ferramentas já instaladas
+são preservadas; `--skip-tools` e `--dry-run` não executam gerenciadores.
+
+`--harden-codex` aplica `sandbox_mode = "workspace-write"`,
+`approval_policy = "on-request"`, `approvals_reviewer = "user"` e
+`[windows].sandbox = "unelevated"` com backup. A remoção de confiança é
+limitada à seção exata da raiz do perfil que contenha somente
+`trust_level = "trusted"`; projetos específicos permanecem intactos.
 
 ## Skills desta configuração
 
@@ -53,7 +65,7 @@ carregue caminho absoluto de ninguém:
 | `{{PYTHON}}` | caminho do `python3`/`python` encontrado |
 | `{{NODE}}` | caminho do `node` encontrado |
 | `{{CLAUDE_HOME}}` | `CLAUDE_CONFIG_DIR` ou `~/.claude` |
-| `{{HEADROOM_PORT}}` | `HEADROOM_PORT` ou `48731` |
+| `{{HEADROOM_PORT}}` | `HEADROOM_PORT`, ou `runtime.headroom_port` em `versions.json`, ou `48731` |
 
 Sempre com barra normal, inclusive no Windows — Node, Python e o shell aceitam.
 

@@ -14,6 +14,20 @@ headroom proxy --port "${HEADROOM_PORT:-48731}"
 headroom doctor
 ```
 
+No PowerShell, use o mesmo valor efetivo:
+
+```powershell
+$headroomPort = if ([string]::IsNullOrWhiteSpace($env:HEADROOM_PORT)) { '48731' } else { $env:HEADROOM_PORT }
+headroom init --global --memory claude --port $headroomPort
+headroom init --global --memory codex --port $headroomPort
+headroom proxy --port $headroomPort
+headroom doctor
+```
+
+O instalador valida a porta como um inteiro entre 1 e 65535. Confira a
+configuração e o endpoint efetivo com `./install.sh --doctor` ou
+`.\install.ps1 --doctor`.
+
 > ⚠️ **O `--port` no `init` é obrigatório.** O padrão do headroom é `8787`; o
 > padrão do ai-config é `48731`. Sem o `--port`, o `headroom init` grava `8787`
 > no roteamento dos agentes (e no manifest em `~/.headroom/`), enquanto o proxy
@@ -38,6 +52,10 @@ export HEADROOM_PORT=48731
 export ANTHROPIC_BASE_URL="http://127.0.0.1:${HEADROOM_PORT}"
 export OPENAI_BASE_URL="http://127.0.0.1:${HEADROOM_PORT}/v1"
 ```
+
+O endpoint deve permanecer em `127.0.0.1`; não exponha o proxy na rede. A
+configuração do Codex pode ser endurecida explicitamente com
+`--harden-codex`, sempre com backup do `config.toml` local.
 
 Veja `.env.example`. O proxy fica em `127.0.0.1` — não o exponha na rede.
 

@@ -53,10 +53,17 @@ o miolo do bloco é atualizado.
 ./install.sh --prefer-repo      # em conflito, usa sempre o valor do repo
 ./install.sh --yes              # não pergunta nada (= --keep-existing)
 ./install.sh --skip-tools       # sincroniza só configurações
+./install.sh --update-tools     # atualiza ferramentas gerenciadas para versions.json
+./install.sh --harden-codex      # aplica baseline seguro do Codex com backup
 ./install.sh --doctor           # verifica runtimes, agentes e ferramentas
 ```
 
-Sem flags: **configuração + ferramentas recomendadas**, num comando só.
+No Windows, use as mesmas opções com `.\install.ps1`. `--update-tools` é
+opt-in: a instalação normal somente prepara ferramentas ausentes. `--harden-codex`
+força os defaults de sandbox/aprovação e remove apenas uma confiança ampla
+exata na raiz do perfil quando a seção não contém outras chaves.
+
+Sem flags: **configuração + ferramentas recomendadas ausentes**, num comando só.
 Sem flags, cada conflito vira uma pergunta. Em sessão não interativa (CI, pipe)
 o valor atual é sempre mantido.
 
@@ -75,9 +82,11 @@ automaticamente as recomendadas. Use `--skip-tools` para o modo config-only.
 | **Gitleaks** | Detecção de segredos | winget, Chocolatey ou Homebrew |
 | **Trivy** | CVEs em dependências | winget, Chocolatey ou Homebrew |
 
-Se a automação falhar, use `npm install -g @fission-ai/openspec@latest`,
-`python -m pip install --user semgrep` e o gerenciador do sistema para
-Gitleaks/Trivy (`winget`, `choco` ou `brew`).
+Se a automação falhar, consulte as versões em `versions.json` e use
+`npm install -g @fission-ai/openspec@<versão>`,
+`python -m pip install --user semgrep==<versão>` e o gerenciador do sistema
+para Gitleaks/Trivy (`winget`, `choco` ou `brew`). O modo `--update-tools`
+mostra e executa esses comandos somente quando solicitado.
 
 RTK, Headroom e aurum continuam opcionais e são instalados pelos seus canais
 próprios. Codex Security exige autenticação e nunca é instalado
@@ -101,7 +110,11 @@ Divergências geram aviso, não impedem a instalação.
 | Semgrep | 1.172.0 |
 | Gitleaks | 8.30.1 |
 | Trivy | 0.72.0 |
-| Codex Security | 0.1.1 |
+| Codex Security | 0.1.6 |
+
+O `doctor` também valida `HEADROOM_PORT`, consulta
+`http://127.0.0.1:<porta>/readyz` e alerta sobre sandbox/aprovação inseguras no
+Codex sem alterar o arquivo local.
 
 ## O que fica no repositório e o que não fica
 

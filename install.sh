@@ -27,6 +27,7 @@ for a in "$@"; do
         -h|--help)
             cat <<'USO'
 uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
+     [--update-tools] [--harden-codex]
      ./install.sh --doctor
 
   --dry-run        mostra o que faria, sem escrever nada
@@ -34,6 +35,8 @@ uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-to
   --prefer-repo    em conflito, usa sempre o valor do repo
   --yes            não pergunta nada (equivale a --keep-existing)
   --skip-tools     sincroniza só configurações, sem instalar ferramentas
+  --update-tools   atualiza ferramentas gerenciadas para as referências do repo
+  --harden-codex   aplica defaults seguros ao Codex e remove confiança ampla exata
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,

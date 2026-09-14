@@ -1,22 +1,4 @@
-# installer-reliability Specification
-
-## Purpose
-
-Define o comportamento confiável e multiplataforma dos instaladores e do
-diagnóstico de ferramentas externas distribuídos pelo ai-config.
-## Requirements
-### Requirement: Falhas de configuração são preservadas
-Os wrappers de instalação MUST encerrar com o mesmo código diferente de zero
-quando o motor de configuração falhar e MUST NOT iniciar a instalação de
-dependências após essa falha.
-
-#### Scenario: Argumento inválido em dry-run
-- **WHEN** o motor de configuração rejeita um argumento durante `--dry-run`
-- **THEN** o wrapper encerra com código diferente de zero
-
-#### Scenario: Falha antes das dependências
-- **WHEN** a instalação da configuração termina com erro
-- **THEN** nenhuma instalação global de ferramenta é iniciada
+## MODIFIED Requirements
 
 ### Requirement: Ferramentas de segurança são instaladas conforme a plataforma
 
@@ -135,15 +117,3 @@ Bash e PowerShell.
 #### Scenario: Falha no motor comum
 - **WHEN** o motor comum encerra com erro
 - **THEN** o wrapper devolve o mesmo código de saída
-
-### Requirement: Padrão compartilhado permanece coerente
-O conteúdo instalado para Claude Code, Codex e Gemini SHALL manter OpenSpec,
-qualidade e segurança como partes do mesmo padrão compartilhado.
-
-#### Scenario: Instalação em múltiplos agentes
-- **WHEN** o instalador sincroniza os arquivos de instrução
-- **THEN** cada adapter referencia um `WORKFLOW.md` que documenta OpenSpec, qualidade e segurança
-
-#### Scenario: Documentação pública
-- **WHEN** o usuário consulta README, mapa de configuração ou `--help`
-- **THEN** o comportamento plug-and-play e a opção `--skip-tools` são descritos de forma consistente

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-11
+goal: Corrigir sandbox/confiança/documentação, alinhar OpenSpec e Headroom,
+  atualizar ferramentas e tornar o doctor/instalador mais confiáveis.
