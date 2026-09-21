@@ -48,27 +48,32 @@
 
 - [x] 5.1 Rodar preflight, suíte de testes, compilação Python, sintaxe Bash,
   dry-run e doctor em Windows.
-- [ ] 5.2 Rodar os equivalentes Bash e as auditorias de segurança disponíveis,
+- [x] 5.2 Rodar os equivalentes Bash e as auditorias de segurança disponíveis,
   registrando explicitamente o que o ambiente não suportar.
 - [ ] 5.3 Rodar `aurum check .`, revisar o diff e confirmar que a branch não
   contém credenciais, caminhos absolutos ou arquivos gerados.
 
 ### Registro da verificação — 2026-09-21
 
-- 5.2: `install.ps1 --validate --json`, `install.sh --validate --json`,
-  `install.ps1 --dry-run` e a sintaxe nativa do Git Bash passaram. Gitleaks
-  8.30.1 não encontrou vazamentos e
-  Trivy 0.72.0 não reportou vulnerabilidades ou arquivos de dependência. O
-  `bash` genérico do runner resolve para WSL sem `/bin/bash`, mas isso não
-  afeta a verificação nativa do Git Bash nem o gate Unix do CI. Semgrep não
-  conseguiu baixar `config=auto` por `SSLCertVerificationError` em
-  `semgrep.dev`; não foi desativada a validação TLS. Codex Security não foi
-  executado nesta etapa porque a auditoria local já cobriu os scanners
-  disponíveis e o scan remoto exige credencial/sessão explícita.
-- 5.3: a revisão de `git diff --check`, `git status --short` e do preflight
-  confirmou que não há achados de credenciais, caminhos absolutos ou arquivos
-  gerados fora do change OpenSpec. `aurum check . --json` não pôde ser
-  executado: `aurum` não está no PATH e o caminho alternativo documentado
-  também não existe. Portanto, estas duas tasks permanecem abertas para um
-  ambiente com Semgrep/TLS e aurum funcionais; o change não deve ser arquivado
-  antes desses gates.
+- 5.1: `install.ps1 --validate --json`, a suíte de 40 testes (1 skip esperado),
+  `py_compile`, `install.ps1 --dry-run` e `install.ps1 --doctor` passaram. O
+  doctor confirmou o proxy Headroom em `127.0.0.1:48731` e o baseline seguro do
+  Codex.
+- 5.2: `install.sh --validate --json` e a sintaxe nativa do Git Bash passaram.
+  Gitleaks 8.30.1 não encontrou vazamentos; Trivy 0.72.0 não reportou
+  vulnerabilidades nem arquivos de dependência. Semgrep 1.172.0 não encontrou
+  achados no `ci.yml` após os pins das actions. O download de `config=auto` pelo
+  cliente Python continua falhando por `SSLCertVerificationError`; a mesma
+  configuração foi obtida com `curl` usando TLS do Schannel e executada
+  localmente, sem desativar validação TLS. Codex Security autenticou, mas os
+  scans completo e diferencial foram interrompidos pelo limite de custo da
+  sessão (aproximadamente US$ 2,31 e US$ 2,00); não há relatório remoto
+  conclusivo e isso não deve ser apresentado como um scan completo.
+- 5.3: `openspec validate --all --strict`, `git diff --check`, o preflight e a
+  revisão do diff confirmaram a higiene estrutural; não há credenciais,
+  caminhos absolutos ou arquivos gerados versionados fora do change OpenSpec.
+  `aurum check . --json` não pôde ser executado: o executável não está no PATH,
+  o caminho alternativo documentado não existe e o pacote público PyPI
+  `aurum` é um projeto diferente. A task permanece aberta; o change não deve
+  ser arquivado nem a branch mergeada antes de obter o `aurum` correto e o
+  score de qualidade.
