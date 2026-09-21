@@ -21,6 +21,28 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
 | `versions.json` | — | lido por `--doctor` e por `--update-tools` como catálogo |
 
+## Preflight do repositório
+
+Antes de qualquer instalação, o motor executa `validate` em modo somente
+leitura. Ele confirma que as fontes deste mapa existem, que os arquivos JSON e
+TOML são válidos, que os placeholders são conhecidos, que todas as versões têm
+uma checagem no `doctor` e que os templates não carregam caminhos, credenciais,
+estado de sessão ou endpoints expostos.
+
+```bash
+./install.sh --validate
+./install.sh --validate --json
+```
+
+```powershell
+.\install.ps1 --validate
+.\install.ps1 --validate --json
+```
+
+O relatório JSON tem `schema_version: 1`, caminhos relativos e não reproduz
+valores sensíveis. O preflight não instala ferramentas nem inicia Headroom;
+verificações indisponíveis aparecem em `skipped`.
+
 ## Operação segura
 
 `--update-tools` atualiza somente OpenSpec, Semgrep, Gitleaks e Trivy, usando

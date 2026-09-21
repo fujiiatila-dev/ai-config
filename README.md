@@ -55,6 +55,8 @@ o miolo do bloco é atualizado.
 ./install.sh --skip-tools       # sincroniza só configurações
 ./install.sh --update-tools     # atualiza ferramentas gerenciadas para versions.json
 ./install.sh --harden-codex      # aplica baseline seguro do Codex com backup
+./install.sh --validate          # valida o checkout sem escrever nada
+./install.sh --validate --json   # relatório estruturado para CI
 ./install.sh --doctor           # verifica runtimes, agentes e ferramentas
 ```
 
@@ -62,6 +64,34 @@ No Windows, use as mesmas opções com `.\install.ps1`. `--update-tools` é
 opt-in: a instalação normal somente prepara ferramentas ausentes. `--harden-codex`
 força os defaults de sandbox/aprovação e remove apenas uma confiança ampla
 exata na raiz do perfil quando a seção não contém outras chaves.
+
+### Fluxo recomendado
+
+Para alterar ou distribuir esta configuração, siga as etapas nesta ordem:
+
+```text
+validate → dry-run → apply → doctor → security → quality → commit
+```
+
+1. `validate` verifica contratos, fontes, JSON/TOML, placeholders, wrappers,
+   versões e higiene de segurança sem escrever, iniciar serviços ou instalar
+   ferramentas.
+2. `dry-run` mostra o merge específico da máquina e os conflitos que serão
+   preservados ou perguntados.
+3. `apply` é a instalação normal, com backup antes de cada escrita. Ela executa
+   o mesmo preflight automaticamente e para antes do primeiro backup se a
+   origem estiver inválida.
+4. `doctor` verifica runtimes, ferramentas, Headroom e o baseline local do
+   Codex; ele não substitui o `validate`.
+5. `security` executa as auditorias completas configuradas (`security-audit`,
+   Gitleaks, Semgrep, Trivy ou Codex Security).
+6. `quality` executa `aurum check .`; só então a mudança deve ser commitada.
+
+O comando `validate` retorna `0` quando o checkout passa e `1` quando há erro.
+`--json` produz um único documento com `schema_version`, `status`, contagens,
+erros, avisos, verificações ignoradas e checks executados. Ausência de Bash no
+Windows é registrada como `skipped`; a validação Bash é coberta pelos runners
+Unix do CI.
 
 Sem flags: **configuração + ferramentas recomendadas ausentes**, num comando só.
 Sem flags, cada conflito vira uma pergunta. Em sessão não interativa (CI, pipe)

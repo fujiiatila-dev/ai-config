@@ -24,10 +24,12 @@ ARGS=()
 for a in "$@"; do
     case "$a" in
         --doctor|doctor) CMD=doctor ;;
+        --validate|validate) CMD=validate ;;
         -h|--help)
             cat <<'USO'
 uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
      [--update-tools] [--harden-codex]
+     ./install.sh --validate [--json]
      ./install.sh --doctor
 
   --dry-run        mostra o que faria, sem escrever nada
@@ -37,6 +39,7 @@ uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-to
   --skip-tools     sincroniza só configurações, sem instalar ferramentas
   --update-tools   atualiza ferramentas gerenciadas para as referências do repo
   --harden-codex   aplica defaults seguros ao Codex e remove confiança ampla exata
+  --validate       valida o checkout sem escrever nem instalar ferramentas
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,

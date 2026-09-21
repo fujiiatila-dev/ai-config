@@ -34,9 +34,14 @@ instalado nas máquinas de trabalho por `install.sh` / `install.ps1`.
 
 5. Não versione credenciais, tokens, histórico de sessão nem memória.
 
+6. Antes de commitar, rode `python tools/aiconfig.py validate --json` e só
+   prossiga se o preflight passar. Depois revise o `--dry-run`, execute
+   `doctor`, as auditorias de segurança e `aurum check .`.
+
 ## Antes de commitar
 
 ```bash
+python tools/aiconfig.py validate --json
 ./install.sh --dry-run     # não pode acusar escrita indevida
 ./install.sh --doctor      # ferramentas externas
 python3 -m py_compile tools/aiconfig.py claude/statusline.py

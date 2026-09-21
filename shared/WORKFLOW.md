@@ -65,6 +65,30 @@ Trivy para as referências de `versions.json`. `--harden-codex` aplica o
 baseline de sandbox/aprovação com backup; `--skip-tools` e `--dry-run` não
 executam gerenciadores de pacotes.
 
+### Fluxo operacional único
+
+Para uma mudança no repositório ou uma instalação em uma máquina, use:
+
+```text
+validate → dry-run → apply → doctor → security → quality → commit
+```
+
+1. `validate` é o preflight do checkout. Ele é determinístico, somente leitura
+   e não instala ferramentas, inicia Headroom nem altera perfis.
+2. `dry-run` simula o merge e mostra conflitos, destinos e arquivos que seriam
+   alterados.
+3. `apply` é a instalação efetiva; o instalador repete o preflight antes do
+   primeiro backup e mantém as políticas atuais de merge.
+4. `doctor` verifica o ambiente local, versões, Headroom e o baseline do Codex.
+5. `security` executa as auditorias completas disponíveis para o agente.
+6. `quality` executa `aurum check .`; depois da revisão, a mudança pode ser
+   commitada.
+
+O preflight aceita `validate` ou `--validate` nos dois wrappers. `--json`
+emite um documento estável para CI: erros têm código, caminho relativo e ação
+corretiva, sem reproduzir segredos. Ausências de verificações opcionais são
+registradas como `skipped`; elas não são instaladas automaticamente.
+
 Os artefatos ficam em `openspec/`:
 
 ```text

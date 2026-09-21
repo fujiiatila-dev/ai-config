@@ -34,6 +34,36 @@ def write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def validation_fixture(parent: str | Path) -> Path:
+    root = Path(parent) / "repo"
+    files = (
+        ".env.example",
+        "README.md",
+        "CONFIGURATION_MAP.md",
+        "install.sh",
+        "install.ps1",
+        "shared/WORKFLOW.md",
+        "claude/settings.json",
+        "claude/CLAUDE.md",
+        "claude/RTK.md",
+        "claude/statusline.py",
+        "adapters/codex/AGENTS.md",
+        "adapters/codex/config.toml.example",
+        "adapters/codex/hooks.json",
+        "adapters/gemini/GEMINI.md",
+        "adapters/rtk/filters.toml",
+        "tools/headroom_healthcheck.py",
+        "versions.json",
+    )
+    for relative in files:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    (root / "claude/agents").mkdir(parents=True, exist_ok=True)
+    (root / "claude/skills").mkdir(parents=True, exist_ok=True)
+    return root
+
+
 class DoctorTests(unittest.TestCase):
     def test_every_version_reference_has_an_explicit_doctor_key(self) -> None:
         versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
@@ -96,6 +126,127 @@ class DoctorTests(unittest.TestCase):
             version = AICONFIG.tool_version("gitleaks")
 
         self.assertEqual(version, "8.30.1")
+
+
+class ValidationTests(unittest.TestCase):
+    def test_valid_repository_report_is_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            before = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+            report = AICONFIG.validate_repository(root)
+            after = {
+                path.relative_to(root).as_posix(): path.read_bytes()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+
+        self.assertTrue(report.ok)
+        self.assertEqual(before, after)
+        self.assertEqual(report.as_dict()["schema_version"], 1)
+
+    def test_missing_source_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            (root / "shared/WORKFLOW.md").unlink()
+            report = AICONFIG.validate_repository(root)
+
+        self.assertFalse(report.ok)
+        self.assertIn("missing-source", {item["code"] for item in report.errors})
+
+    def test_invalid_json_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            (root / "claude/settings.json").write_text("{broken", encoding="utf-8")
+            report = AICONFIG.validate_repository(root)
+
+        self.assertIn("invalid-json", {item["code"] for item in report.errors})
+
+    def test_unknown_placeholder_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            path = root / "adapters/codex/hooks.json"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("{{PYTHON}}", "{{UNKNOWN}}"),
+                encoding="utf-8",
+            )
+            report = AICONFIG.validate_repository(root)
+
+        self.assertIn("unknown-placeholder", {item["code"] for item in report.errors})
+
+    def test_security_findings_redact_values_and_allow_loopback_examples(self) -> None:
+        secret = "sk-" + "A" * 24
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            env = root / ".env.example"
+            env.write_text(env.read_text(encoding="utf-8") + f"\nEXAMPLE={secret}\n", encoding="utf-8")
+            report = AICONFIG.validate_repository(root)
+            payload = json.dumps(report.as_dict(), ensure_ascii=False)
+
+        self.assertIn("credential-pattern", {item["code"] for item in report.errors})
+        self.assertNotIn(secret, payload)
+        self.assertNotIn("non-loopback-endpoint", {item["code"] for item in report.errors})
+
+    def test_absolute_path_and_external_endpoint_are_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            config = root / "adapters/codex/config.toml.example"
+            text = config.read_text(encoding="utf-8")
+            text = text.replace("http://127.0.0.1:{{HEADROOM_PORT}}/v1", "https://service.example/v1")
+            config.write_text(text + "\nlocal = 'C:\\Users\\alice\\config'\n", encoding="utf-8")
+            report = AICONFIG.validate_repository(root)
+
+        codes = {item["code"] for item in report.errors}
+        self.assertIn("non-loopback-endpoint", codes)
+        self.assertIn("machine-absolute-path", codes)
+
+    def test_json_output_is_single_document(self) -> None:
+        report = AICONFIG.ValidationReport()
+        output = io.StringIO()
+        with (
+            mock.patch.object(AICONFIG, "validate_repository", return_value=report),
+            contextlib.redirect_stdout(output),
+        ):
+            result = AICONFIG.cmd_validate(SimpleNamespace(json=True))
+
+        data = json.loads(output.getvalue())
+        self.assertEqual(result, 0)
+        self.assertEqual(data["status"], "passed")
+        self.assertEqual(data["schema_version"], 1)
+
+    def test_install_stops_before_context_when_preflight_fails(self) -> None:
+        report = AICONFIG.ValidationReport()
+        report.error("invalid-json", "claude/settings.json", "invalid", "fix")
+        args = SimpleNamespace(
+            dry_run=False,
+            skip_tools=False,
+            update_tools=False,
+            prefer_repo=False,
+            keep_existing=True,
+            yes=True,
+        )
+        with mock.patch.object(AICONFIG, "validate_repository", return_value=report), mock.patch.object(AICONFIG, "Ctx") as ctx:
+            result = AICONFIG.cmd_install(args)
+
+        self.assertEqual(result, 2)
+        ctx.assert_not_called()
+
+    def test_validate_does_not_start_tools_or_headroom(self) -> None:
+        report = AICONFIG.ValidationReport()
+        with (
+            mock.patch.object(AICONFIG, "validate_repository", return_value=report),
+            mock.patch.object(AICONFIG, "install_recommended_tools") as install,
+            mock.patch.object(AICONFIG, "ensure_headroom_deploy") as headroom,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(AICONFIG.cmd_validate(SimpleNamespace(json=False)), 0)
+
+        install.assert_not_called()
+        headroom.assert_not_called()
 
 
 class HeadroomHealthcheckTests(unittest.TestCase):

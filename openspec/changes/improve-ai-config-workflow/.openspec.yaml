@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-21
+goal: Transformar regras de configuração e segurança em verificações
+  determinísticas executáveis localmente e no CI.
