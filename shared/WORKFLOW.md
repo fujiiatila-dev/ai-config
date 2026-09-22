@@ -8,8 +8,10 @@ agente, e não apenas referenciado.
 
 - **RTK** reduz a saída dos comandos de shell. Onde houver hook configurado ele
   reescreve os comandos sozinho; onde não houver, prefixe com `rtk`.
-- **Headroom** comprime o contexto que chega ao modelo através de um proxy
-  local em `127.0.0.1`. Mantenha-o rodando quando estiver instalado.
+- **Headroom** é opcional e fica no caminho de rede do provedor. Use-o somente
+  por sessão: `headroom wrap claude` ou `codex --profile headroom`. Nunca
+  persista `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, não instale hooks que iniciem
+  o proxy e mantenha os perfis padrão conectados diretamente aos provedores.
 - Leia só o trecho de arquivo de que precisa. Prefira `grep`/`rg` a despejar
   arquivos inteiros no contexto.
 

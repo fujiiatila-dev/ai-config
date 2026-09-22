@@ -38,3 +38,16 @@ repassar seu código de saída sem iniciar instaladores de dependências.
 
 - **WHEN** o usuário executa a validação, com ou sem saída JSON
 - **THEN** nenhum gerenciador de pacotes, Headroom ou serviço externo é iniciado
+
+### Requirement: Instalação não torna proxy opcional em dependência global
+
+A instalação padrão SHALL criar apenas um perfil Headroom opt-in para Codex e
+SHALL NOT iniciar Headroom, persistir URLs de proxy nos baselines ou instalar
+hooks de recuperação automática.
+
+#### Scenario: Instalação com Headroom ausente ou parado
+
+- **GIVEN** o executável Headroom não existe ou nenhum proxy está ativo
+- **WHEN** o usuário instala o ai-config
+- **THEN** a instalação conclui sem tentar executar Headroom
+- **AND** Claude e Codex padrão permanecem configurados para seus provedores

@@ -53,6 +53,32 @@
 - [ ] 5.3 Rodar `aurum check .`, revisar o diff e confirmar que a branch não
   contém credenciais, caminhos absolutos ou arquivos gerados.
 
+## 6. Interoperabilidade Headroom/Claude/Codex
+
+- [x] 6.1 Remover `ANTHROPIC_BASE_URL`, o provider global do Codex, os hooks de
+  inicialização e o healthcheck que tornavam o proxy obrigatório.
+- [x] 6.2 Instalar um perfil `headroom.config.toml` opt-in para Codex com SSE e
+  manter Claude opt-in por `headroom wrap claude --tool-search true`.
+- [x] 6.3 Fazer o preflight rejeitar novas rotas/hooks duráveis e o `doctor`
+  detectá-los sem imprimir valores, iniciar ou reiniciar processos.
+- [x] 6.4 Documentar atualização, desativação do Kompress no Windows,
+  concorrência suportada, fallback direto e recuperação da configuração legada.
+- [ ] 6.5 Rodar preflight, testes, dry-run, doctor, segurança e qualidade e
+  confirmar que o instalador não chama nenhum comando Headroom.
+
+## 7. Recuperação de sessões do Codex
+
+- [x] 7.1 Auditar rollouts, índice, banco de threads e estado de migração sem
+  alterar ou copiar o conteúdo das conversas para o repositório.
+- [x] 7.2 Implementar backup transacional, reconstrução idempotente do índice e
+  associação pela raiz de projeto mais específica, preservando títulos.
+- [x] 7.3 Cobrir caminhos estendidos do Windows, metadados suplementares,
+  idempotência e preservação de rollouts técnicos com testes automatizados.
+- [x] 7.4 Aplicar a recuperação local, validar a sessão solicitada e documentar
+  a necessidade de reiniciar a interface uma vez.
+- [x] 7.5 Migrar providers Headroom gravados no histórico para OpenAI com backup
+  integral dos rollouts e validar o bootstrap real da TUI sem enviar mensagem.
+
 ### Registro da verificação — 2026-09-21
 
 - 5.1: `install.ps1 --validate --json`, a suíte de 40 testes (1 skip esperado),
@@ -77,3 +103,24 @@
   `aurum` é um projeto diferente. A task permanece aberta; o change não deve
   ser arquivado nem a branch mergeada antes de obter o `aurum` correto e o
   score de qualidade.
+- 6.5: o preflight passou sem avisos; 37 testes passaram (1 skip Bash esperado
+  no Windows); `py_compile`, `openspec validate --strict`, dry-run, apply e
+  doctor passaram. Gitleaks não encontrou segredos, Trivy não encontrou
+  manifests vulneráveis e Semgrep não encontrou achados em `tools/aiconfig.py`.
+  O scan amplo manteve 63 alertas preexistentes nos scripts vendorizados da
+  skill Impeccable. Headroom foi atualizado para 0.38.0, a porta 48731 ficou
+  fechada e o doctor confirmou ausência de vínculo global. Chamadas mínimas de
+  Claude e Codex padrão retornaram `DIRECT_OK` com o proxy desligado; o Codex
+  confirmou `provider: openai`. A task segue aberta somente porque o executável
+  Aurum e seu fallback documentado não existem.
+- 7.1–7.5: 45 rollouts foram preservados e reindexados; 39 threads de usuário
+  foram reassociadas a três projetos e a sessão solicitada foi confirmada no
+  rollout, no índice e no banco. Seis rollouts técnicos permanecem indexados,
+  sem promoção artificial para a tabela de conversas. O backup transacional
+  ficou fora do repositório em `~/.codex/backups/session-recovery-*`. Os dois
+  testes novos passaram; Semgrep executou 290 regras nesses arquivos sem
+  achados, Gitleaks não encontrou segredos e Trivy não encontrou manifests de
+  dependência vulneráveis. O gate Aurum segue indisponível tanto no PATH quanto
+  no fallback documentado. Foram migrados 32 rollouts e 34 threads de
+  `headroom` para `openai`; a TUI carregou o título, modelo, diretório e
+  transcript da sessão solicitada sem repetir o erro de provider.

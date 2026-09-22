@@ -21,12 +21,6 @@ SPEC = importlib.util.spec_from_file_location("aiconfig_under_test", MODULE_PATH
 assert SPEC and SPEC.loader
 AICONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AICONFIG)
-HEALTH_SPEC = importlib.util.spec_from_file_location(
-    "headroom_healthcheck_under_test", ROOT / "tools" / "headroom_healthcheck.py"
-)
-assert HEALTH_SPEC and HEALTH_SPEC.loader
-HEALTH = importlib.util.module_from_spec(HEALTH_SPEC)
-HEALTH_SPEC.loader.exec_module(HEALTH)
 
 
 def write_executable(path: Path, body: str) -> None:
@@ -40,6 +34,7 @@ def validation_fixture(parent: str | Path) -> Path:
         ".env.example",
         "README.md",
         "CONFIGURATION_MAP.md",
+        "HEADROOM.md",
         "install.sh",
         "install.ps1",
         "shared/WORKFLOW.md",
@@ -49,10 +44,10 @@ def validation_fixture(parent: str | Path) -> Path:
         "claude/statusline.py",
         "adapters/codex/AGENTS.md",
         "adapters/codex/config.toml.example",
-        "adapters/codex/hooks.json",
+        "adapters/codex/headroom.config.toml.example",
         "adapters/gemini/GEMINI.md",
         "adapters/rtk/filters.toml",
-        "tools/headroom_healthcheck.py",
+        "tools/recover_codex_sessions.py",
         "versions.json",
     )
     for relative in files:
@@ -169,9 +164,11 @@ class ValidationTests(unittest.TestCase):
     def test_unknown_placeholder_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = validation_fixture(temp)
-            path = root / "adapters/codex/hooks.json"
+            path = root / "adapters/codex/headroom.config.toml.example"
             path.write_text(
-                path.read_text(encoding="utf-8").replace("{{PYTHON}}", "{{UNKNOWN}}"),
+                path.read_text(encoding="utf-8").replace(
+                    "{{HEADROOM_PORT}}", "{{UNKNOWN}}"
+                ),
                 encoding="utf-8",
             )
             report = AICONFIG.validate_repository(root)
@@ -194,7 +191,7 @@ class ValidationTests(unittest.TestCase):
     def test_absolute_path_and_external_endpoint_are_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = validation_fixture(temp)
-            config = root / "adapters/codex/config.toml.example"
+            config = root / "adapters/codex/headroom.config.toml.example"
             text = config.read_text(encoding="utf-8")
             text = text.replace("http://127.0.0.1:{{HEADROOM_PORT}}/v1", "https://service.example/v1")
             config.write_text(text + "\nlocal = 'C:\\Users\\alice\\config'\n", encoding="utf-8")
@@ -240,115 +237,54 @@ class ValidationTests(unittest.TestCase):
         with (
             mock.patch.object(AICONFIG, "validate_repository", return_value=report),
             mock.patch.object(AICONFIG, "install_recommended_tools") as install,
-            mock.patch.object(AICONFIG, "ensure_headroom_deploy") as headroom,
             contextlib.redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(AICONFIG.cmd_validate(SimpleNamespace(json=False)), 0)
 
         install.assert_not_called()
-        headroom.assert_not_called()
 
 
-class HeadroomHealthcheckTests(unittest.TestCase):
-    def test_healthy_deployment_does_not_start(self) -> None:
-        status = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
+class HeadroomConfigurationTests(unittest.TestCase):
+    def test_default_agent_configs_do_not_require_headroom(self) -> None:
+        settings = json.loads((ROOT / "claude" / "settings.json").read_text(encoding="utf-8"))
+        codex = (ROOT / "adapters" / "codex" / "config.toml.example").read_text(
+            encoding="utf-8"
         )
-        with mock.patch.object(HEALTH.subprocess, "run", return_value=status) as run:
-            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
-        run.assert_called_once_with(
-            ["headroom", "install", "status", "--profile", "init-user"],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=5,
-        )
+        self.assertNotIn("ANTHROPIC_BASE_URL", settings.get("env", {}))
+        self.assertNotIn('model_provider = "headroom"', codex)
+        self.assertFalse((ROOT / "adapters" / "codex" / "hooks.json").exists())
+        self.assertFalse((ROOT / "tools" / "headroom_healthcheck.py").exists())
 
-    def test_stopped_deployment_starts_and_is_verified(self) -> None:
-        stopped = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: stopped\nHealthy: no\n", ""
-        )
-        started = subprocess.CompletedProcess(["headroom"], 0, "", "")
-        healthy = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
-        )
-        with mock.patch.object(
-            HEALTH.subprocess, "run", side_effect=[stopped, started, healthy]
-        ) as run:
-            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
-        self.assertEqual(run.call_args_list[1].args[0], [
-            "headroom", "install", "start", "--profile", "init-user"
-        ])
-        self.assertEqual(run.call_count, 3)
+    def test_codex_headroom_profile_is_explicit_and_disables_websockets(self) -> None:
+        profile = (
+            ROOT / "adapters" / "codex" / "headroom.config.toml.example"
+        ).read_text(encoding="utf-8")
+        self.assertIn('model_provider = "headroom"', profile)
+        self.assertIn('base_url = "http://127.0.0.1:{{HEADROOM_PORT}}/v1"', profile)
+        self.assertIn("supports_websockets = false", profile)
+        self.assertIn('wire_api = "responses"', profile)
+        self.assertIn("[mcp_servers.headroom]", profile)
+        self.assertIn('command = "{{HEADROOM}}"', profile)
 
-    def test_unhealthy_running_deployment_is_restarted(self) -> None:
-        unhealthy = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: running\nHealthy: no\n", ""
-        )
-        started = subprocess.CompletedProcess(["headroom"], 0, "", "")
-        healthy = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: running\nHealthy: yes\n", ""
-        )
-        with mock.patch.object(
-            HEALTH.subprocess, "run", side_effect=[unhealthy, started, healthy]
-        ) as run:
-            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user"))
-        self.assertEqual(run.call_count, 3)
+    def test_preflight_rejects_persistent_headroom_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            settings_path = root / "claude/settings.json"
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            settings.setdefault("env", {})["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:48731"
+            settings_path.write_text(json.dumps(settings), encoding="utf-8")
+            config = root / "adapters/codex/config.toml.example"
+            config_text = config.read_text(encoding="utf-8")
+            config.write_text(
+                config_text.replace(
+                    "[windows]", 'model_provider = "headroom"\n\n[windows]', 1
+                ),
+                encoding="utf-8",
+            )
+            report = AICONFIG.validate_repository(root)
 
-    def test_failed_start_returns_false(self) -> None:
-        stopped = subprocess.CompletedProcess(
-            ["headroom"], 0, "Status: stopped\nHealthy: no\n", ""
-        )
-        failed = subprocess.CompletedProcess(["headroom"], 7, "", "failed")
-        with mock.patch.object(
-            HEALTH.subprocess, "run", side_effect=[stopped, failed]
-        ):
-            self.assertFalse(HEALTH.ensure_deployment("headroom", "init-user"))
-
-    def test_dry_run_never_runs_headroom(self) -> None:
-        with mock.patch.object(HEALTH.subprocess, "run") as run:
-            self.assertTrue(HEALTH.ensure_deployment("headroom", "init-user", dry_run=True))
-        run.assert_not_called()
-
-    def test_missing_headroom_is_non_fatal_for_standalone_check(self) -> None:
-        with mock.patch.object(HEALTH.shutil, "which", return_value=None):
-            self.assertEqual(HEALTH.main([]), 0)
-
-
-class HookMergeTests(unittest.TestCase):
-    def test_recovery_hook_is_inserted_before_legacy_ensure(self) -> None:
-        args = SimpleNamespace(
-            dry_run=True, prefer_repo=False, keep_existing=False, yes=False
-        )
-        ctx = AICONFIG.Ctx(args)
-        local = [{
-            "matcher": "startup|resume",
-            "hooks": [{
-                "type": "command",
-                "command": "{{CODEX_HOME}}/Scripts/headroom.EXE init hook ensure --profile init-user --marker headroom-init-codex",
-                "timeout": 15,
-            }],
-        }]
-        repo = [{
-            "matcher": "startup|resume",
-            "hooks": [{
-                "type": "command",
-                "command": '"{{PYTHON}}" "{{CODEX_HOME}}/headroom_healthcheck.py" --headroom "{{HEADROOM}}" --profile init-user --ensure --marker headroom-init-codex',
-                "timeout": 60,
-            }],
-        }]
-        merged = AICONFIG.merge_hook_event(local, repo, ctx, "hooks.SessionStart")
-        commands = [hook["command"] for hook in merged[0]["hooks"]]
-        self.assertIn("headroom_healthcheck.py", commands[0])
-        self.assertIn("init hook ensure", commands[1])
-
-    def test_codex_hook_uses_portable_placeholders_and_long_timeout(self) -> None:
-        hooks = json.loads((ROOT / "adapters" / "codex" / "hooks.json").read_text())
-        hook = hooks["hooks"]["SessionStart"][0]["hooks"][0]
-        self.assertEqual(hook["timeout"], 60)
-        self.assertIn("{{PYTHON}}", hook["command"])
-        self.assertIn("{{CODEX_HOME}}", hook["command"])
-        self.assertNotRegex(hook["command"], r"[A-Za-z]:[/\\]")
+        codes = [item["code"] for item in report.errors]
+        self.assertGreaterEqual(codes.count("persistent-headroom-route"), 2)
 
 
 class ToolInstallationTests(unittest.TestCase):
@@ -548,20 +484,24 @@ class ToolInstallationTests(unittest.TestCase):
             with (
                 mock.patch.dict(os.environ, env),
                 mock.patch.object(
+                    AICONFIG, "validate_repository", return_value=AICONFIG.ValidationReport()
+                ),
+                mock.patch.object(
                     AICONFIG,
                     "install_recommended_tools",
                     return_value=True,
                 ) as install,
-                mock.patch.object(
-                    AICONFIG,
-                    "ensure_headroom_deploy",
-                    return_value=True,
-                ) as headroom,
+                mock.patch.object(AICONFIG.subprocess, "run") as run,
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 self.assertEqual(AICONFIG.cmd_install(args), 0)
             install.assert_called_once_with()
-            headroom.assert_called_once()
+            run.assert_not_called()
+            self.assertTrue((root / "codex" / "headroom.config.toml").exists())
+            self.assertNotIn(
+                'model_provider = "headroom"',
+                (root / "codex" / "config.toml").read_text(encoding="utf-8"),
+            )
 
     def test_skip_tools_and_dry_run_do_not_run_installers(self) -> None:
         for dry_run, skip_tools in ((True, False), (False, True)):
@@ -584,13 +524,16 @@ class ToolInstallationTests(unittest.TestCase):
                     }
                     with (
                         mock.patch.dict(os.environ, env),
+                        mock.patch.object(
+                            AICONFIG,
+                            "validate_repository",
+                            return_value=AICONFIG.ValidationReport(),
+                        ),
                         mock.patch.object(AICONFIG, "install_recommended_tools") as install,
-                        mock.patch.object(AICONFIG, "ensure_headroom_deploy") as headroom,
                         contextlib.redirect_stdout(io.StringIO()),
                     ):
                         self.assertEqual(AICONFIG.cmd_install(args), 0)
                     install.assert_not_called()
-                    headroom.assert_called_once()
 
     def test_new_codex_config_uses_secure_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -669,6 +612,40 @@ class ToolInstallationTests(unittest.TestCase):
 
         probe.assert_called_once_with("12345")
         self.assertIn("HEADROOM_PORT = 12345", output.getvalue())
+
+    def test_doctor_reports_persistent_claude_route_without_exposing_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            claude = root / "claude"
+            claude.mkdir()
+            (claude / "settings.json").write_text(
+                json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "HEADROOM_PORT": "12345",
+                        "CLAUDE_CONFIG_DIR": str(claude),
+                        "CODEX_HOME": str(root / "codex"),
+                        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+                        "OPENAI_BASE_URL": "",
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(AICONFIG, "doctor_checks", return_value=[]),
+                mock.patch.object(AICONFIG, "which", return_value=None),
+                mock.patch.object(AICONFIG, "proxy_status", return_value="ok"),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                self.assertEqual(AICONFIG.cmd_doctor(None), 0)
+
+        text = output.getvalue()
+        self.assertIn("Roteamento Headroom persistente", text)
+        self.assertIn("settings.json persiste ANTHROPIC_BASE_URL", text)
+        self.assertIn("risco de ConnectionRefused", text)
+        self.assertNotIn("http://127.0.0.1:8787", text)
 
     def test_tool_version_stops_after_shared_deadline(self) -> None:
         process = mock.Mock(

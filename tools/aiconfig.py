@@ -34,6 +34,11 @@ import urllib.request
 from pathlib import Path
 
 try:
+    import winreg
+except ModuleNotFoundError:  # Unix: persistent shell variables are shell-specific.
+    winreg = None
+
+try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10: validation stays dependency-free.
     tomllib = None
@@ -66,10 +71,10 @@ VALIDATION_REQUIRED_SOURCES = (
     "shared/WORKFLOW.md",
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
-    "adapters/codex/hooks.json",
-    "tools/headroom_healthcheck.py",
+    "adapters/codex/headroom.config.toml.example",
     "adapters/gemini/GEMINI.md",
     "adapters/rtk/filters.toml",
+    "tools/recover_codex_sessions.py",
     "versions.json",
 )
 VALIDATION_PORTABLE_FILES = (
@@ -82,13 +87,21 @@ VALIDATION_PORTABLE_FILES = (
     "claude/settings.json",
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
-    "adapters/codex/hooks.json",
+    "adapters/codex/headroom.config.toml.example",
     "adapters/gemini/GEMINI.md",
     "adapters/rtk/filters.toml",
     "versions.json",
 )
 VALIDATION_SKIP_PARTS = frozenset(
-    {".git", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache"}
+    {
+        ".git",
+        ".headroom",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+    }
 )
 
 # ── saída ────────────────────────────────────────────────────────────────────
@@ -238,13 +251,6 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
     out = copy.deepcopy(local)
     by_matcher = {e.get("matcher"): e for e in out}
 
-    def is_recovery(command: str) -> bool:
-        return "headroom_healthcheck.py" in command.replace("\\", "/").lower()
-
-    def is_headroom_ensure(command: str) -> bool:
-        normalized = command.replace("\\", "/").lower()
-        return "headroom" in normalized and "init hook ensure" in normalized
-
     for entry in repo:
         m = entry.get("matcher")
         if m in by_matcher:
@@ -256,21 +262,7 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
                     None,
                 )
                 if gemeo is None:
-                    hooks = tgt.setdefault("hooks", [])
-                    before_ensure = None
-                    if is_recovery(h.get("command", "")):
-                        before_ensure = next(
-                            (
-                                i
-                                for i, item in enumerate(hooks)
-                                if is_headroom_ensure(item.get("command", ""))
-                            ),
-                            None,
-                        )
-                    if before_ensure is None:
-                        hooks.append(copy.deepcopy(h))
-                    else:
-                        hooks.insert(before_ensure, copy.deepcopy(h))
+                    tgt.setdefault("hooks", []).append(copy.deepcopy(h))
                     add(f"{path} :: {m} (+comando)")
                 elif gemeo.get("command") != h.get("command"):
                     # Mesmo script, invocação diferente: escolher uma só.
@@ -907,30 +899,6 @@ def install_recommended_tools(update: bool = False) -> bool:
 
 
 # ── comandos ─────────────────────────────────────────────────────────────────
-def ensure_headroom_deploy(ctx: Ctx, executable: str | None, profile: str = "init-user") -> bool:
-    """Run the portable Headroom healthcheck after configuration sync."""
-    if not executable:
-        warn("Headroom não está disponível; deploy init-user não verificada")
-        return False
-    if ctx.dry_run:
-        print(f"  [dry-run] verificaria a deploy Headroom '{profile}' e faria start se necessário")
-        return True
-
-    script = ROOT / "tools" / "headroom_healthcheck.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script), "--headroom", executable, "--profile", profile],
-            timeout=75,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        warn(f"healthcheck Headroom falhou: {exc}")
-        return False
-    if result.returncode != 0:
-        warn(f"deploy Headroom '{profile}' não ficou ativa (código {result.returncode})")
-        return False
-    return True
-
-
 def proxy_status(porta: str) -> str:
     """Probe real do proxy Headroom: 'ok', 'http <status>' ou 'fora'."""
     # Sem ProxyHandler: o opener padrão do urllib respeita proxy de ambiente e
@@ -961,6 +929,117 @@ def configured_headroom_port() -> str:
     if not 1 <= port <= 65535:
         raise ValueError("HEADROOM_PORT deve estar entre 1 e 65535")
     return str(port)
+
+
+def _windows_persistent_provider_env() -> set[tuple[str, str]]:
+    """Return configured provider URL names/scopes without reading their values."""
+    if winreg is None:
+        return set()
+    locations = (
+        ("User", winreg.HKEY_CURRENT_USER, r"Environment"),
+        (
+            "Machine",
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    configured: set[tuple[str, str]] = set()
+    for scope, hive, path in locations:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                for variable in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
+                    try:
+                        value, _ = winreg.QueryValueEx(key, variable)
+                    except OSError:
+                        continue
+                    if isinstance(value, str) and value.strip():
+                        configured.add((variable, scope))
+        except OSError:
+            continue
+    return configured
+
+
+def headroom_persistence_findings(
+    claude_home: Path | None = None, codex_home: Path | None = None
+) -> list[str]:
+    """Report durable provider routing that can strand agents behind Headroom.
+
+    Values are deliberately omitted: provider URLs may contain credentials.
+    The opt-in ``headroom.config.toml`` profile is not inspected because it
+    cannot affect a normal Codex launch without ``--profile headroom``.
+    """
+    findings: list[str] = []
+
+    for variable in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
+        if os.environ.get(variable, "").strip():
+            findings.append(
+                f"processo: {variable} está definida; novas sessões deixam de usar o provedor direto"
+            )
+    for variable, scope in sorted(_windows_persistent_provider_env()):
+        findings.append(
+            f"Windows/{scope}: {variable} está persistida; novas sessões herdam o proxy"
+        )
+
+    claude_home = claude_home or Path(
+        os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
+    )
+    settings_path = claude_home / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            findings.append("Claude: settings.json não pôde ser lido para auditar o roteamento")
+        else:
+            env = settings.get("env", {})
+            if isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL"):
+                findings.append(
+                    "Claude: settings.json persiste ANTHROPIC_BASE_URL e torna o proxy obrigatório"
+                )
+            hooks = json.dumps(settings.get("hooks", {}), ensure_ascii=False).lower()
+            if "headroom init hook ensure" in hooks or "headroom_healthcheck.py" in hooks:
+                findings.append(
+                    "Claude: settings.json contém hook que inicia ou recupera Headroom automaticamente"
+                )
+
+    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    codex_config = codex_home / "config.toml"
+    if codex_config.exists():
+        try:
+            config_text = codex_config.read_text(encoding="utf-8")
+        except OSError:
+            findings.append("Codex: config.toml não pôde ser lido para auditar o roteamento")
+        else:
+            sections = _toml_sections(config_text)
+            root_keys = _toml_keys(sections.get("", []))
+            provider = _toml_unquote(root_keys.get("model_provider", "")).lower()
+            if provider == "headroom":
+                findings.append(
+                    "Codex: config.toml seleciona Headroom globalmente; o perfil padrão depende do proxy"
+                )
+            if root_keys.get("openai_base_url"):
+                findings.append(
+                    "Codex: config.toml persiste openai_base_url; confirme que o roteamento é intencional"
+                )
+            if any(section.lower() == "[mcp_servers.headroom]" for section in sections):
+                findings.append(
+                    "Codex: config.toml inicia o MCP Headroom globalmente em todas as sessões"
+                )
+
+    for owner, hooks_path in (
+        ("Claude", claude_home / "hooks.json"),
+        ("Codex", codex_home / "hooks.json"),
+    ):
+        if not hooks_path.exists():
+            continue
+        try:
+            hooks_text = hooks_path.read_text(encoding="utf-8").lower()
+        except OSError:
+            continue
+        if "headroom init hook ensure" in hooks_text or "headroom_healthcheck.py" in hooks_text:
+            findings.append(
+                f"{owner}: hooks.json contém inicialização automática durável do Headroom"
+            )
+    return findings
 
 
 def _toml_unquote(value: str) -> str:
@@ -1580,8 +1659,8 @@ def _validate_portability_and_security(root: Path, report: ValidationReport) -> 
 
     structured = (
         root / "claude/settings.json",
-        root / "adapters/codex/hooks.json",
         root / "adapters/codex/config.toml.example",
+        root / "adapters/codex/headroom.config.toml.example",
         root / "adapters/rtk/filters.toml",
         root / ".env.example",
     )
@@ -1626,6 +1705,21 @@ def _validate_portability_and_security(root: Path, report: ValidationReport) -> 
         text = _validation_read(codex_template, report, root)
         if text is not None:
             sections = _toml_sections(text)
+            root_keys = _toml_keys(sections.get("", []))
+            if _toml_unquote(root_keys.get("model_provider", "")).lower() == "headroom":
+                report.error(
+                    "persistent-headroom-route",
+                    "adapters/codex/config.toml.example",
+                    "o baseline do Codex seleciona Headroom globalmente",
+                    "mova o provider para headroom.config.toml.example e mantenha o baseline direto",
+                )
+            if any(section.lower() == "[mcp_servers.headroom]" for section in sections):
+                report.error(
+                    "persistent-headroom-mcp",
+                    "adapters/codex/config.toml.example",
+                    "o baseline do Codex inicia o MCP Headroom globalmente",
+                    "mantenha integrações Headroom fora do baseline padrão",
+                )
             for section, lines in sections.items():
                 if _project_path_from_section(section):
                     report.error(
@@ -1645,6 +1739,31 @@ def _validate_portability_and_security(root: Path, report: ValidationReport) -> 
                         "remova a chave do template e mantenha-a no perfil local",
                     )
                     break
+
+    claude_settings = root / "claude/settings.json"
+    if claude_settings.is_file():
+        text = _validation_read(claude_settings, report, root)
+        if text is not None:
+            try:
+                settings = json.loads(text)
+            except json.JSONDecodeError:
+                settings = {}
+            env = settings.get("env", {}) if isinstance(settings, dict) else {}
+            if isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL"):
+                report.error(
+                    "persistent-headroom-route",
+                    "claude/settings.json",
+                    "o baseline do Claude persiste ANTHROPIC_BASE_URL",
+                    "remova a rota global e use headroom wrap claude somente na sessão opt-in",
+                )
+            hooks = json.dumps(settings.get("hooks", {}), ensure_ascii=False).lower()
+            if "headroom init hook ensure" in hooks or "headroom_healthcheck.py" in hooks:
+                report.error(
+                    "persistent-headroom-hook",
+                    "claude/settings.json",
+                    "o baseline do Claude inicia Headroom por hook",
+                    "remova o hook durável e deixe o ciclo de vida sob controle do usuário",
+                )
 
 
 def _validate_workflow(root: Path, report: ValidationReport) -> None:
@@ -1767,8 +1886,8 @@ def cmd_doctor(_args) -> int:
     if porta:
         print(f"\n  HEADROOM_PORT = {porta}")
 
-        # Probe real da porta: um proxy configurado mas fora do ar derruba o Codex
-        # com erro críptico de stream. Aqui o motivo aparece na hora.
+        # A sondagem é somente leitura. Headroom é opt-in: proxy ausente não
+        # prejudica os agentes enquanto não houver roteamento persistente.
         st = proxy_status(porta)
         if st == "ok":
             print(
@@ -1776,10 +1895,6 @@ def cmd_doctor(_args) -> int:
                 f"http://127.0.0.1:{porta}/readyz"
             )
         else:
-            if which("headroom"):
-                acao = f"rode: headroom proxy --port {porta}  (ou o atalho de inicialização)"
-            else:
-                acao = f"instale o headroom (veja README.md) e rode: headroom proxy --port {porta}"
             if st.startswith("http"):
                 print(
                     f"  {_c('33', '!')}       headroom-proxy  respondeu HTTP {st.split()[-1]} "
@@ -1790,7 +1905,19 @@ def cmd_doctor(_args) -> int:
                     f"  {_c('33', '!')}       headroom-proxy  NÃO está respondendo em "
                     f"http://127.0.0.1:{porta}/readyz"
                 )
-            print(f"        {acao}")
+            print("        Headroom é opt-in; os perfis padrão continuam diretos aos provedores.")
+
+        route_findings = headroom_persistence_findings()
+        if route_findings:
+            print("\n  Roteamento Headroom persistente")
+            for finding in route_findings:
+                print(f"  {_c('33', '!')}       {finding}")
+            print(
+                "        risco de ConnectionRefused quando o proxy degrada; "
+                "veja HEADROOM.md > Recuperação"
+            )
+        else:
+            print("  ok       roteamento   nenhum vínculo global obrigatório com Headroom")
 
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     codex_config = codex_home / "config.toml"
@@ -1832,7 +1959,6 @@ def cmd_install(args) -> int:
     py = which("python3", "python") or sys.executable
     node = which("node") or "node"
     headroom = which("headroom", "headroom.exe") or "headroom"
-
     if ctx.dry_run:
         print(_c("1;33", "\n== simulação (--dry-run): nada será escrito =="))
     print(f"\n  destino Claude : {claude_home}")
@@ -1884,15 +2010,14 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    install_toml(
+        ROOT / "adapters/codex/headroom.config.toml.example",
+        codex_home / "headroom.config.toml",
+        ctx,
+        subst,
+    )
     if getattr(args, "harden_codex", False):
         harden_codex_config(codex_home / "config.toml", ctx)
-    install_file(
-        ROOT / "tools/headroom_healthcheck.py",
-        codex_home / "headroom_healthcheck.py",
-        ctx,
-        "Codex healthcheck Headroom",
-    )
-    install_json(ROOT / "adapters/codex/hooks.json", codex_home / "hooks.json", ctx, subst)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
@@ -1900,9 +2025,6 @@ def cmd_install(args) -> int:
 
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
-
-    head("Headroom")
-    ensure_headroom_deploy(ctx, which("headroom", "headroom.exe"))
 
     head("Resumo")
     if ctx.dry_run:

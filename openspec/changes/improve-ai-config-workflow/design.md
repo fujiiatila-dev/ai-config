@@ -113,6 +113,62 @@ usarão a mesma sequência operacional. A validação verificará os pontos que
 podem ser determinados sem um parser Markdown completo, enquanto o conteúdo
 explicativo continuará sendo revisado por humanos.
 
+### 8. Headroom não fará parte do caminho padrão dos provedores
+
+O baseline do Claude não conterá `ANTHROPIC_BASE_URL`; o baseline do Codex não
+selecionará `model_provider = "headroom"`. O instalador não executará
+`headroom init`, `headroom install start` ou healthchecks de recuperação e não
+instalará hooks que façam isso. Assim, uma falha do proxy não afeta uma sessão
+normal dos agentes.
+
+Alternativa rejeitada: manter o deployment persistente e apenas reiniciá-lo
+quando `/readyz` falhar. Uma porta saudável não prova que o executor interno
+consegue concluir requisições, e reinicialização concorrente pode duplicar
+workers ou disputar o listener.
+
+### 9. A ativação será explícita e isolada por agente
+
+Claude usará `headroom wrap claude`, que injeta a rota somente no processo
+filho e oferece a opção `--tool-search true`. Codex receberá um arquivo
+`headroom.config.toml` separado, ativado apenas por `codex --profile headroom`.
+Esse provider desabilitará WebSocket para evitar a classe de encerramentos de
+stream observada no transporte proxyado.
+
+Alternativa rejeitada: `headroom wrap codex` como padrão documentado. Além da
+variável de sessão, esse wrapper registra MCP no config ativo; o perfil separado
+torna a alteração de roteamento visível, reversível e independente do baseline.
+
+### 10. Estabilidade terá prioridade sobre taxa de compressão
+
+No Windows, as receitas opt-in desabilitarão Kompress e seu fallback, mantendo
+somente compressores estruturais/passthrough. A concorrência não será elevada
+automaticamente: o limite Anthropic já é derivado da CPU e aumentar paralelismo
+durante vazamento de threads agrava a contenção. O `doctor` será passivo e
+omitirá os valores de URLs ao relatar variáveis, hooks ou provider persistentes.
+
+Alternativa rejeitada: recomendar `HEADROOM_MAX_CONCURRENCY=16`. Essa variável
+não corresponde à interface atual; as opções suportadas têm semânticas distintas
+e só devem ser ajustadas a partir de métricas.
+
+### 11. Rollouts serão a fonte durável da recuperação de sessões
+
+A recuperação do Codex será um comando separado e opt-in. Ela descobrirá todos
+os rollouts em `~/.codex/sessions`, preservará os registros suplementares do
+índice, fará backup consistente dos bancos SQLite pela API de backup e somente
+então reconstruirá o índice. Threads já existentes serão associadas à raiz de
+projeto mais específica, inclusive quando o Windows gravar caminhos com o
+prefixo estendido `\\?\`.
+
+Rollouts de execuções e subagentes ausentes da tabela de threads continuarão
+indexados, mas não serão inseridos artificialmente no banco da interface. Isso
+preserva todo o material recuperável sem inventar títulos, recência ou demais
+campos internos. A operação será idempotente e verificará novamente o estado
+depois de escrever.
+
+Alternativa rejeitada: gerar novas conversas copiando mensagens dos JSONL. Isso
+perderia metadados, duplicaria históricos e poderia alterar a ordem dos turnos;
+o defeito observado é de índice/associação, não de conteúdo.
+
 ## Risks / Trade-offs
 
 - **Falsos positivos em higiene de segurança** → padrões de alta confiança,
@@ -126,6 +182,12 @@ explicativo continuará sendo revisado por humanos.
   desde a primeira versão e testar apenas os campos contratuais.
 - **Drift futuro na documentação** → adicionar a validação ao CI e manter o
   fluxo de mudança OpenSpec como requisito de alterações comportamentais.
+- **Configuração legada permanecer após atualizar o repo** → o `doctor` detecta
+  as rotas/hooks sem expor valores e a documentação fornece `unwrap` e inspeção
+  manual; a política de merge impede remoção silenciosa do perfil do usuário.
+- **Menor economia com Kompress desativado** → aceitar a perda de compressão ML
+  no Windows em troca de não bloquear o caminho até o provedor; a ativação
+  futura exige evidência de estabilidade.
 
 ## Migration Plan
 
@@ -140,3 +202,7 @@ explicativo continuará sendo revisado por humanos.
 6. Para rollback, reverter a branch. Backups de instalações de usuário
    continuam sob o diretório de backup existente; o novo preflight não cria
    alterações que precisem ser revertidas.
+7. Remover hooks/healthcheck Headroom do checkout, instalar o perfil Codex
+   opt-in e validar que Claude/Codex padrão funcionem com o proxy desligado.
+8. Auditar e recuperar o índice/associações das sessões locais, validar uma
+   sessão conhecida e reiniciar a interface para recarregar a barra lateral.

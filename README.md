@@ -100,6 +100,39 @@ o valor atual é sempre mantido.
 Destinos, se você quiser mudá-los: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `GEMINI_HOME`, `RTK_CONFIG_DIR`, `HEADROOM_PORT`.
 
+Headroom é opt-in e nunca é iniciado nem injetado globalmente pelo instalador.
+Veja [`HEADROOM.md`](HEADROOM.md) para sessões isoladas, mitigação do
+Kompress/ONNX, perfil Codex sem WebSocket e recuperação de instalações legadas.
+
+## Recuperação de sessões locais do Codex
+
+Se conversas intactas desaparecerem da barra lateral após uma migração de
+projetos, audite primeiro sem escrever nada:
+
+```bash
+python tools/recover_codex_sessions.py --require-session <UUID>
+```
+
+Para reparar, acrescente `--apply`. A ferramenta cria um backup transacional
+dos bancos e do estado global em `~/.codex/backups/session-recovery-*`,
+reconstrói `session_index.jsonl` a partir de todos os rollouts preservados e
+associa as conversas existentes à raiz de projeto mais específica. Registros
+suplementares, como títulos personalizados, são mantidos. Reinicie o aplicativo
+Codex uma vez após a aplicação para recarregar a barra lateral.
+
+Se `codex resume` falhar com `Model provider 'headroom' not found`, migre também
+o provider salvo nas sessões antigas. Os JSONL afetados são copiados
+integralmente para o mesmo backup antes da alteração:
+
+```bash
+python tools/recover_codex_sessions.py --apply \
+  --replace-provider headroom=openai \
+  --require-session <UUID>
+```
+
+O reparo não copia histórico para o repositório e não converte rollouts
+técnicos de execuções/subagentes em conversas de usuário.
+
 ## Dependências externas
 
 As configurações funcionam sem ferramentas externas, mas o instalador prepara
@@ -132,7 +165,7 @@ Divergências geram aviso, não impedem a instalação.
 | Python | 3.14.4 |
 | Node.js | 24.20.0 |
 | RTK | 0.46.0 |
-| Headroom | 0.37.0 |
+| Headroom | 0.38.0 |
 | aurum | 0.4.0 |
 | Claude Code | 2.1.251 |
 | Codex CLI | 0.151.0 |
@@ -143,8 +176,9 @@ Divergências geram aviso, não impedem a instalação.
 | Codex Security | 0.1.6 |
 
 O `doctor` também valida `HEADROOM_PORT`, consulta
-`http://127.0.0.1:<porta>/readyz` e alerta sobre sandbox/aprovação inseguras no
-Codex sem alterar o arquivo local.
+`http://127.0.0.1:<porta>/readyz`, detecta rotas e hooks Headroom persistentes e
+alerta sobre sandbox/aprovação inseguras no Codex sem alterar arquivos nem
+iniciar processos.
 
 ## O que fica no repositório e o que não fica
 

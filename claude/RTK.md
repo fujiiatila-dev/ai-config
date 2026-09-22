@@ -27,18 +27,16 @@ rtk --version
 ## Headroom
 
 ```bash
-headroom doctor                                   # diagnóstico
-headroom savings                                  # economia acumulada
-headroom init --global --memory claude --port "${HEADROOM_PORT:-48731}"
-headroom init --global --memory codex  --port "${HEADROOM_PORT:-48731}"
-headroom proxy --port "${HEADROOM_PORT:-48731}"   # sobe o proxy local
+headroom doctor                                  # diagnóstico somente leitura
+headroom savings                                 # economia acumulada
+HEADROOM_DISABLE_KOMPRESS=1 \
+HEADROOM_DISABLE_KOMPRESS_FALLBACK=1 \
+headroom wrap claude --port "${HEADROOM_PORT:-48731}" --tool-search true
 ```
 
-⚠️ O padrão do headroom é `8787`; o do ai-config é `48731`. Passe `--port` no
-`init` e no `proxy` sempre, para o roteamento dos agentes e o proxy ficarem na
-mesma porta.
-
-O proxy fica em loopback. Claude Code e Codex apontam para ele através de
-`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` quando estiver ativo.
+Headroom é opt-in. Não use `headroom init --global`, deployments `init-user` ou
+hooks de inicialização, e não persista `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`.
+Se o proxy degradar, encerre a sessão e reinicie `claude` diretamente. Para o
+Codex, use apenas `codex --profile headroom`; veja `HEADROOM.md` no repositório.
 
 Chaves de API, tokens e credenciais nunca entram no repositório de configuração.
