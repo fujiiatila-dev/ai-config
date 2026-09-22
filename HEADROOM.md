@@ -1,75 +1,150 @@
-# Headroom
+# Headroom (opcional e sob demanda)
 
-Camada local de compressão de contexto, complementar ao RTK: o RTK encolhe a
-saída dos comandos antes de virar contexto, o Headroom comprime o contexto que
-chega ao modelo.
+O Headroom comprime o contexto que chega ao modelo por meio de um proxy local.
+Ele é complementar ao RTK, mas também entra no caminho de rede entre o agente e
+o provedor. Por isso o ai-config mantém Claude e Codex conectados diretamente
+aos provedores por padrão.
 
-## Instalação
+O instalador não executa `headroom init`, não cria hooks, não inicia deployments
+e não grava `ANTHROPIC_BASE_URL` ou `OPENAI_BASE_URL` globalmente. Se o proxy
+parar ou degradar, uma nova sessão normal de `claude` ou `codex` continua
+funcionando sem ele.
+
+## Instalar e atualizar
 
 ```bash
 uv tool install --python 3.13 "headroom-ai[proxy,mcp,memory]"
-headroom init --global --memory claude --port "${HEADROOM_PORT:-48731}"
-headroom init --global --memory codex  --port "${HEADROOM_PORT:-48731}"
-headroom proxy --port "${HEADROOM_PORT:-48731}"
-headroom doctor
+headroom update --check
+headroom update
 ```
 
-No PowerShell, use o mesmo valor efetivo:
+Se o updater informar que `uv` não está no `PATH`, use o módulo já instalado:
+`python -m uv tool upgrade headroom-ai`.
 
-```powershell
-$headroomPort = if ([string]::IsNullOrWhiteSpace($env:HEADROOM_PORT)) { '48731' } else { $env:HEADROOM_PORT }
-headroom init --global --memory claude --port $headroomPort
-headroom init --global --memory codex --port $headroomPort
-headroom proxy --port $headroomPort
-headroom doctor
-```
+A versão de referência fica em `versions.json`. Atualizar é recomendado, mas
+não substitui as proteções abaixo: falhas do executor Kompress/ONNX também foram
+observadas em versões posteriores à 0.34.
 
-O instalador valida a porta como um inteiro entre 1 e 65535. Confira a
-configuração e o endpoint efetivo com `./install.sh --doctor` ou
-`.\install.ps1 --doctor`.
+## Claude: sessão opt-in
 
-> ⚠️ **O `--port` no `init` é obrigatório.** O padrão do headroom é `8787`; o
-> padrão do ai-config é `48731`. Sem o `--port`, o `headroom init` grava `8787`
-> no roteamento dos agentes (e no manifest em `~/.headroom/`), enquanto o proxy
-> sobe em `48731` — o Codex fica sem conexão e aparece o erro de stream
-> desconectado. Passe sempre `--port "${HEADROOM_PORT:-48731}"` no `init` e no
-> `proxy`.
->
-> Já rodou o init com a porta errada? Repita com a porta certa (o init
-> reescreve o roteamento): `headroom init --global --memory codex --port
-> "${HEADROOM_PORT:-48731}"`.
-
-Estes comandos são seus, não do `install.sh`. O instalador do ai-config **não**
-roda `headroom init` nem sobe o proxy: ele escreve a seção
-`[model_providers.headroom]`, instala o hook portátil do Codex e, quando o
-executável está disponível, garante que a deploy `init-user` esteja
-`running`/`Healthy: yes` usando `headroom install start --profile init-user` se
-necessário. Se Headroom não estiver instalado, a configuração continua sendo
-aplicada e o instalador emite um aviso; use `./install.sh --doctor` para
-conferir.
-
-O hook `SessionStart` chama o mesmo healthcheck antes de garantir o marker
-`headroom-init-codex`. O timeout é de 60 segundos para acomodar o cold start de
-5–10 segundos no Windows.
-
-## Apontando os agentes para o proxy
+Use o wrapper, que limita `ANTHROPIC_BASE_URL` ao processo iniciado:
 
 ```bash
-export HEADROOM_PORT=48731
-export ANTHROPIC_BASE_URL="http://127.0.0.1:${HEADROOM_PORT}"
-export OPENAI_BASE_URL="http://127.0.0.1:${HEADROOM_PORT}/v1"
+HEADROOM_DISABLE_KOMPRESS=1 \
+HEADROOM_DISABLE_KOMPRESS_FALLBACK=1 \
+HEADROOM_COMPRESSION_MAX_WORKERS=4 \
+headroom wrap claude --port "${HEADROOM_PORT:-48731}" --tool-search true
 ```
 
-O endpoint deve permanecer em `127.0.0.1`; não exponha o proxy na rede. A
-configuração do Codex pode ser endurecida explicitamente com
-`--harden-codex`, sempre com backup do `config.toml` local.
+No PowerShell:
 
-Veja `.env.example`. O proxy fica em `127.0.0.1` — não o exponha na rede.
+```powershell
+$headroomPort = if ($env:HEADROOM_PORT) { $env:HEADROOM_PORT } else { '48731' }
+$env:HEADROOM_DISABLE_KOMPRESS = '1'
+$env:HEADROOM_DISABLE_KOMPRESS_FALLBACK = '1'
+$env:HEADROOM_COMPRESSION_MAX_WORKERS = '4'
+headroom wrap claude --port $headroomPort --tool-search true
+```
 
-## Limites
+O wrapper preserva a busca dinâmica de ferramentas explicitamente. Fora dessa
+sessão, inicie `claude` normalmente para usar a conexão nativa.
 
-Os arquivos que o `headroom init` escreve podem conter permissões, caminhos e
-preferências da máquina. Não os copie para este repositório.
+## Codex: perfil opt-in e transporte estável
 
-Credenciais de provedor vêm do ambiente ou do login do próprio agente, nunca de
-arquivo versionado.
+O instalador cria `~/.codex/headroom.config.toml`, separado do
+`~/.codex/config.toml`. Esse perfil aponta para loopback e define
+`supports_websockets = false`, evitando o caminho WebSocket associado aos
+encerramentos de stream observados. A integração MCP de recuperação também fica
+dentro desse perfil; nenhuma sessão normal a inicia. O perfil só é ativado por
+`--profile`.
+
+Primeiro inicie o proxy em um terminal dedicado:
+
+```bash
+HEADROOM_DISABLE_KOMPRESS=1 \
+HEADROOM_DISABLE_KOMPRESS_FALLBACK=1 \
+HEADROOM_COMPRESSION_MAX_WORKERS=4 \
+headroom proxy --host 127.0.0.1 --port "${HEADROOM_PORT:-48731}" --mode cache --no-telemetry
+```
+
+Depois, em outro terminal:
+
+```bash
+codex --profile headroom
+```
+
+No PowerShell, defina as três variáveis `HEADROOM_*` como no exemplo do Claude,
+execute `headroom proxy --host 127.0.0.1 --port $headroomPort --mode cache
+--no-telemetry` e então `codex --profile headroom` em outro terminal.
+
+Se o proxy apresentar demora, quarentena ou desconexão, encerre a sessão opt-in
+e reabra com `codex`, sem `--profile headroom`.
+
+## Concorrência
+
+Não use `HEADROOM_MAX_CONCURRENCY`: essa variável não corresponde a uma opção
+do proxy atual. Também não eleve a concorrência para mascarar saturação do
+compressor; mais trabalho paralelo pode agravar vazamento de threads e pressão
+de CPU.
+
+As opções suportadas são `HEADROOM_LIMIT_CONCURRENCY` para conexões de entrada
+e `HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY` para o estágio Anthropic. O
+segundo já usa um limite baseado na CPU, com máximo padrão de oito. Ajuste-os
+somente com métricas que demonstrem fila saudável e ausência de quarentena.
+
+## Recuperação de uma instalação legada
+
+Se Claude ou Codex falhar com `ConnectionRefused`, feche as sessões afetadas e
+remova primeiro o vínculo durável:
+
+```bash
+headroom unwrap claude --port "${HEADROOM_PORT:-48731}"
+headroom unwrap codex  --port "${HEADROOM_PORT:-48731}"
+headroom install stop --profile init-user
+```
+
+Depois confira e remova, se ainda existirem:
+
+- `ANTHROPIC_BASE_URL` e `OPENAI_BASE_URL` do ambiente de usuário/sistema;
+- `ANTHROPIC_BASE_URL` em `~/.claude/settings.json`;
+- hooks `SessionStart`/`PreToolUse` que executem `headroom init hook ensure` ou
+  `headroom_healthcheck.py`;
+- `model_provider = "headroom"` na raiz de `~/.codex/config.toml`.
+
+O Codex também salva o provider no `session_meta` de cada rollout. Remover o
+provider global pode fazer uma conversa antiga falhar antes de abrir com
+`Model provider 'headroom' not found`. Migre somente esse metadado e a coluna
+correspondente do banco, sempre com backup:
+
+```bash
+python tools/recover_codex_sessions.py --apply \
+  --replace-provider headroom=openai \
+  --require-session <UUID>
+```
+
+A ferramenta não substitui ocorrências em mensagens: apenas o campo estruturado
+`model_provider` e a coluna equivalente são alterados.
+
+O instalador não apaga essas entradas automaticamente porque elas podem ter
+sido personalizadas e todo conflito exige backup/decisão explícita. O comando
+`./install.sh --doctor` ou `.\install.ps1 --doctor` as sinaliza sem iniciar nem
+parar processos e sem imprimir URLs potencialmente sensíveis.
+
+No PowerShell, verifique também os escopos persistentes:
+
+```powershell
+[Environment]::GetEnvironmentVariable('ANTHROPIC_BASE_URL', 'User')
+[Environment]::GetEnvironmentVariable('OPENAI_BASE_URL', 'User')
+[Environment]::GetEnvironmentVariable('ANTHROPIC_BASE_URL', 'Machine')
+[Environment]::GetEnvironmentVariable('OPENAI_BASE_URL', 'Machine')
+```
+
+Após a limpeza, uma sessão normal de `claude` e uma de `codex` devem funcionar
+mesmo com a porta `48731` fechada.
+
+## Limites de segurança
+
+Mantenha o proxy em `127.0.0.1`; não o exponha na rede. Credenciais vêm do
+ambiente da sessão ou do login do agente e nunca de arquivo versionado. Os
+arquivos produzidos por `headroom init` podem conter caminhos e preferências da
+máquina e não devem ser copiados para este repositório.

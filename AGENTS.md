@@ -25,7 +25,7 @@ instalado nas máquinas de trabalho por `install.sh` / `install.ps1`.
    na máquina de destino.
 
 3. **Regra de trabalho vai em `shared/WORKFLOW.md`**, não duplicada em
-   `claude/CLAUDE.md`, `adapters/codex/AGENTS.md` ou `adapters/gemini/GEMINI.md`
+   `adapters/codex/AGENTS.md` ou `adapters/gemini/GEMINI.md`
    — esses três apenas apontam para ele.
 
 4. **Permissões versionadas são só as portáteis.** Nada de caminho de máquina,

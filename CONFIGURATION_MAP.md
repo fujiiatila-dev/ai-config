@@ -15,11 +15,34 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `shared/WORKFLOW.md` | `~/.gemini/WORKFLOW.md` | bloco `ai-config` |
 | `adapters/codex/AGENTS.md` | `~/.codex/AGENTS.md` | bloco `ai-config` |
 | `adapters/codex/config.toml.example` | `~/.codex/config.toml` | TOML, por seção/chave |
-| `adapters/codex/hooks.json` | `~/.codex/hooks.json` | JSON, hooks unidos por matcher/comando |
-| `tools/headroom_healthcheck.py` | `~/.codex/headroom_healthcheck.py` | arquivo (pergunta se diferir) |
+| `adapters/codex/headroom.config.toml.example` | `~/.codex/headroom.config.toml` | perfil TOML opt-in, por seção/chave |
+| `HEADROOM.md` | documentação do modo opt-in e recuperação | somente documentação; não é instalado |
+| `tools/recover_codex_sessions.py` | reparo explícito do estado local do Codex | somente sob comando; cria backup e não é executado pelo instalador |
 | `adapters/gemini/GEMINI.md` | `~/.gemini/GEMINI.md` | bloco `ai-config` |
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
 | `versions.json` | — | lido por `--doctor` e por `--update-tools` como catálogo |
+
+## Preflight do repositório
+
+Antes de qualquer instalação, o motor executa `validate` em modo somente
+leitura. Ele confirma que as fontes deste mapa existem, que os arquivos JSON e
+TOML são válidos, que os placeholders são conhecidos, que todas as versões têm
+uma checagem no `doctor` e que os templates não carregam caminhos, credenciais,
+estado de sessão ou endpoints expostos.
+
+```bash
+./install.sh --validate
+./install.sh --validate --json
+```
+
+```powershell
+.\install.ps1 --validate
+.\install.ps1 --validate --json
+```
+
+O relatório JSON tem `schema_version: 1`, caminhos relativos e não reproduz
+valores sensíveis. O preflight não instala ferramentas nem inicia Headroom;
+verificações indisponíveis aparecem em `skipped`.
 
 ## Operação segura
 
@@ -58,9 +81,8 @@ compartilhado.
 
 ## Placeholders
 
-`claude/settings.json` e `adapters/codex/config.toml.example` usam marcadores
-que o instalador resolve na máquina de destino, para que o repositório não
-carregue caminho absoluto de ninguém:
+Os templates usam marcadores que o instalador resolve na máquina de destino,
+para que o repositório não carregue caminho absoluto de ninguém:
 
 | marcador | vira |
 | --- | --- |
@@ -68,7 +90,7 @@ carregue caminho absoluto de ninguém:
 | `{{NODE}}` | caminho do `node` encontrado |
 | `{{CLAUDE_HOME}}` | `CLAUDE_CONFIG_DIR` ou `~/.claude` |
 | `{{CODEX_HOME}}` | `CODEX_HOME` ou `~/.codex` |
-| `{{HEADROOM}}` | caminho do executável Headroom encontrado |
+| `{{HEADROOM}}` | caminho do executável Headroom encontrado para o perfil opt-in |
 | `{{HEADROOM_PORT}}` | `HEADROOM_PORT`, ou `runtime.headroom_port` em `versions.json`, ou `48731` |
 
 Sempre com barra normal, inclusive no Windows — Node, Python e o shell aceitam.

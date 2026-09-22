@@ -6,7 +6,7 @@
     "python": "3.14.4",
     "node": "24.20.0",
     "rtk": "0.46.0",
-    "headroom": "0.37.0",
+    "headroom": "0.38.0",
     "aurum": "0.4.0",
     "claude_code": "2.1.251",
     "codex_cli": "0.151.0",

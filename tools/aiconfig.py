@@ -17,6 +17,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import datetime as _dt
 import filecmp
@@ -32,6 +33,16 @@ import time
 import urllib.request
 from pathlib import Path
 
+try:
+    import winreg
+except ModuleNotFoundError:  # Unix: persistent shell variables are shell-specific.
+    winreg = None
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: validation stays dependency-free.
+    tomllib = None
+
 ROOT = Path(__file__).resolve().parent.parent
 BEGIN = "<!-- ai-config:begin -->"
 END = "<!-- ai-config:end -->"
@@ -45,6 +56,53 @@ MANAGED_TOOL_VERSION_KEYS = {
     "gitleaks": "gitleaks",
     "trivy": "trivy",
 }
+
+VALIDATION_SCHEMA_VERSION = 1
+VALIDATION_PLACEHOLDERS = frozenset(
+    {"PYTHON", "NODE", "CLAUDE_HOME", "CODEX_HOME", "HEADROOM", "HEADROOM_PORT"}
+)
+VALIDATION_REQUIRED_SOURCES = (
+    "claude/settings.json",
+    "claude/CLAUDE.md",
+    "claude/RTK.md",
+    "claude/statusline.py",
+    "claude/agents",
+    "claude/skills",
+    "shared/WORKFLOW.md",
+    "adapters/codex/AGENTS.md",
+    "adapters/codex/config.toml.example",
+    "adapters/codex/headroom.config.toml.example",
+    "adapters/gemini/GEMINI.md",
+    "adapters/rtk/filters.toml",
+    "tools/recover_codex_sessions.py",
+    "versions.json",
+)
+VALIDATION_PORTABLE_FILES = (
+    ".env.example",
+    "CONFIGURATION_MAP.md",
+    "README.md",
+    "shared/WORKFLOW.md",
+    "claude/CLAUDE.md",
+    "claude/RTK.md",
+    "claude/settings.json",
+    "adapters/codex/AGENTS.md",
+    "adapters/codex/config.toml.example",
+    "adapters/codex/headroom.config.toml.example",
+    "adapters/gemini/GEMINI.md",
+    "adapters/rtk/filters.toml",
+    "versions.json",
+)
+VALIDATION_SKIP_PARTS = frozenset(
+    {
+        ".git",
+        ".headroom",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+    }
+)
 
 # ── saída ────────────────────────────────────────────────────────────────────
 _TTY = sys.stdout.isatty()
@@ -193,13 +251,6 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
     out = copy.deepcopy(local)
     by_matcher = {e.get("matcher"): e for e in out}
 
-    def is_recovery(command: str) -> bool:
-        return "headroom_healthcheck.py" in command.replace("\\", "/").lower()
-
-    def is_headroom_ensure(command: str) -> bool:
-        normalized = command.replace("\\", "/").lower()
-        return "headroom" in normalized and "init hook ensure" in normalized
-
     for entry in repo:
         m = entry.get("matcher")
         if m in by_matcher:
@@ -211,21 +262,7 @@ def merge_hook_event(local: list, repo: list, ctx: Ctx, path: str) -> list:
                     None,
                 )
                 if gemeo is None:
-                    hooks = tgt.setdefault("hooks", [])
-                    before_ensure = None
-                    if is_recovery(h.get("command", "")):
-                        before_ensure = next(
-                            (
-                                i
-                                for i, item in enumerate(hooks)
-                                if is_headroom_ensure(item.get("command", ""))
-                            ),
-                            None,
-                        )
-                    if before_ensure is None:
-                        hooks.append(copy.deepcopy(h))
-                    else:
-                        hooks.insert(before_ensure, copy.deepcopy(h))
+                    tgt.setdefault("hooks", []).append(copy.deepcopy(h))
                     add(f"{path} :: {m} (+comando)")
                 elif gemeo.get("command") != h.get("command"):
                     # Mesmo script, invocação diferente: escolher uma só.
@@ -862,30 +899,6 @@ def install_recommended_tools(update: bool = False) -> bool:
 
 
 # ── comandos ─────────────────────────────────────────────────────────────────
-def ensure_headroom_deploy(ctx: Ctx, executable: str | None, profile: str = "init-user") -> bool:
-    """Run the portable Headroom healthcheck after configuration sync."""
-    if not executable:
-        warn("Headroom não está disponível; deploy init-user não verificada")
-        return False
-    if ctx.dry_run:
-        print(f"  [dry-run] verificaria a deploy Headroom '{profile}' e faria start se necessário")
-        return True
-
-    script = ROOT / "tools" / "headroom_healthcheck.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script), "--headroom", executable, "--profile", profile],
-            timeout=75,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        warn(f"healthcheck Headroom falhou: {exc}")
-        return False
-    if result.returncode != 0:
-        warn(f"deploy Headroom '{profile}' não ficou ativa (código {result.returncode})")
-        return False
-    return True
-
-
 def proxy_status(porta: str) -> str:
     """Probe real do proxy Headroom: 'ok', 'http <status>' ou 'fora'."""
     # Sem ProxyHandler: o opener padrão do urllib respeita proxy de ambiente e
@@ -916,6 +929,117 @@ def configured_headroom_port() -> str:
     if not 1 <= port <= 65535:
         raise ValueError("HEADROOM_PORT deve estar entre 1 e 65535")
     return str(port)
+
+
+def _windows_persistent_provider_env() -> set[tuple[str, str]]:
+    """Return configured provider URL names/scopes without reading their values."""
+    if winreg is None:
+        return set()
+    locations = (
+        ("User", winreg.HKEY_CURRENT_USER, r"Environment"),
+        (
+            "Machine",
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    configured: set[tuple[str, str]] = set()
+    for scope, hive, path in locations:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                for variable in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
+                    try:
+                        value, _ = winreg.QueryValueEx(key, variable)
+                    except OSError:
+                        continue
+                    if isinstance(value, str) and value.strip():
+                        configured.add((variable, scope))
+        except OSError:
+            continue
+    return configured
+
+
+def headroom_persistence_findings(
+    claude_home: Path | None = None, codex_home: Path | None = None
+) -> list[str]:
+    """Report durable provider routing that can strand agents behind Headroom.
+
+    Values are deliberately omitted: provider URLs may contain credentials.
+    The opt-in ``headroom.config.toml`` profile is not inspected because it
+    cannot affect a normal Codex launch without ``--profile headroom``.
+    """
+    findings: list[str] = []
+
+    for variable in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"):
+        if os.environ.get(variable, "").strip():
+            findings.append(
+                f"processo: {variable} está definida; novas sessões deixam de usar o provedor direto"
+            )
+    for variable, scope in sorted(_windows_persistent_provider_env()):
+        findings.append(
+            f"Windows/{scope}: {variable} está persistida; novas sessões herdam o proxy"
+        )
+
+    claude_home = claude_home or Path(
+        os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
+    )
+    settings_path = claude_home / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            findings.append("Claude: settings.json não pôde ser lido para auditar o roteamento")
+        else:
+            env = settings.get("env", {})
+            if isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL"):
+                findings.append(
+                    "Claude: settings.json persiste ANTHROPIC_BASE_URL e torna o proxy obrigatório"
+                )
+            hooks = json.dumps(settings.get("hooks", {}), ensure_ascii=False).lower()
+            if "headroom init hook ensure" in hooks or "headroom_healthcheck.py" in hooks:
+                findings.append(
+                    "Claude: settings.json contém hook que inicia ou recupera Headroom automaticamente"
+                )
+
+    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    codex_config = codex_home / "config.toml"
+    if codex_config.exists():
+        try:
+            config_text = codex_config.read_text(encoding="utf-8")
+        except OSError:
+            findings.append("Codex: config.toml não pôde ser lido para auditar o roteamento")
+        else:
+            sections = _toml_sections(config_text)
+            root_keys = _toml_keys(sections.get("", []))
+            provider = _toml_unquote(root_keys.get("model_provider", "")).lower()
+            if provider == "headroom":
+                findings.append(
+                    "Codex: config.toml seleciona Headroom globalmente; o perfil padrão depende do proxy"
+                )
+            if root_keys.get("openai_base_url"):
+                findings.append(
+                    "Codex: config.toml persiste openai_base_url; confirme que o roteamento é intencional"
+                )
+            if any(section.lower() == "[mcp_servers.headroom]" for section in sections):
+                findings.append(
+                    "Codex: config.toml inicia o MCP Headroom globalmente em todas as sessões"
+                )
+
+    for owner, hooks_path in (
+        ("Claude", claude_home / "hooks.json"),
+        ("Codex", codex_home / "hooks.json"),
+    ):
+        if not hooks_path.exists():
+            continue
+        try:
+            hooks_text = hooks_path.read_text(encoding="utf-8").lower()
+        except OSError:
+            continue
+        if "headroom init hook ensure" in hooks_text or "headroom_healthcheck.py" in hooks_text:
+            findings.append(
+                f"{owner}: hooks.json contém inicialização automática durável do Headroom"
+            )
+    return findings
 
 
 def _toml_unquote(value: str) -> str:
@@ -1096,6 +1220,643 @@ def harden_codex_config(config_path: Path, ctx: Ctx) -> None:
     add(f"{config_path} ({details})")
 
 
+class ValidationReport:
+    """Structured, side-effect-free result for the repository preflight."""
+
+    def __init__(self) -> None:
+        self.errors: list[dict[str, str | None]] = []
+        self.warnings: list[dict[str, str | None]] = []
+        self.skipped: list[dict[str, str | None]] = []
+        self.checks: list[dict[str, str]] = []
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def _finding(
+        self,
+        severity: str,
+        code: str,
+        path: str | None,
+        message: str,
+        action: str,
+    ) -> dict[str, str | None]:
+        return {
+            "severity": severity,
+            "code": code,
+            "path": path,
+            "message": message,
+            "action": action,
+        }
+
+    def error(self, code: str, path: str | None, message: str, action: str) -> None:
+        self.errors.append(self._finding("error", code, path, message, action))
+
+    def warning(self, code: str, path: str | None, message: str, action: str) -> None:
+        self.warnings.append(self._finding("warning", code, path, message, action))
+
+    def skip(self, code: str, path: str | None, message: str, action: str) -> None:
+        self.skipped.append(self._finding("skipped", code, path, message, action))
+
+    def check(self, check_id: str, before_errors: int) -> None:
+        self.checks.append(
+            {
+                "id": check_id,
+                "status": "failed" if len(self.errors) > before_errors else "passed",
+            }
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "schema_version": VALIDATION_SCHEMA_VERSION,
+            "status": "passed" if self.ok else "failed",
+            "counts": {
+                "errors": len(self.errors),
+                "warnings": len(self.warnings),
+                "skipped": len(self.skipped),
+                "checks": len(self.checks),
+            },
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "skipped": self.skipped,
+            "checks": self.checks,
+        }
+
+    def print_human(self) -> None:
+        print("ai-config preflight")
+        for check in self.checks:
+            marker = "ok" if check["status"] == "passed" else "erro"
+            print(f"  {marker:<5} {check['id']}")
+        for label, findings in (
+            ("Erros", self.errors),
+            ("Avisos", self.warnings),
+            ("Ignorados", self.skipped),
+        ):
+            if not findings:
+                continue
+            print(f"\n{label}")
+            for finding in findings:
+                location = f" [{finding['path']}]" if finding["path"] else ""
+                print(f"  - {finding['code']}{location}: {finding['message']}")
+                print(f"    ação: {finding['action']}")
+        status = "passou" if self.ok else "falhou"
+        print(
+            f"\nPreflight {status}: {len(self.errors)} erro(s), "
+            f"{len(self.warnings)} aviso(s), {len(self.skipped)} verificação(ões) ignorada(s)."
+        )
+
+
+def _validation_relative(root: Path, path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    candidate = Path(path)
+    try:
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return candidate.name or None
+
+
+def _validation_files(root: Path) -> list[Path]:
+    files = []
+    for path in root.rglob("*"):
+        if not path.is_file() or VALIDATION_SKIP_PARTS.intersection(path.parts):
+            continue
+        files.append(path)
+    return sorted(files)
+
+
+def _validation_read(path: Path, report: ValidationReport, root: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        report.error(
+            "unreadable-source",
+            _validation_relative(root, path),
+            "não foi possível ler o arquivo de origem",
+            "corrija permissões ou codificação e rode validate novamente",
+        )
+        return None
+
+
+def _validation_check(report: ValidationReport, check_id: str, callback) -> None:
+    before = len(report.errors)
+    try:
+        callback()
+    except Exception as exc:  # Keep CI output structured even for an unexpected parser failure.
+        report.error(
+            "validator-error",
+            None,
+            f"a verificação {check_id} terminou com {type(exc).__name__}",
+            "corrija o checkout ou abra uma issue com o identificador da verificação",
+        )
+    report.check(check_id, before)
+
+
+def _validate_structure(root: Path, report: ValidationReport) -> None:
+    map_path = root / "CONFIGURATION_MAP.md"
+    map_text = _validation_read(map_path, report, root)
+    if map_text is None:
+        return
+
+    for relative in VALIDATION_REQUIRED_SOURCES:
+        source = root / relative
+        if relative.endswith("/"):
+            valid = source.is_dir()
+        elif relative in {"claude/agents", "claude/skills"}:
+            valid = source.is_dir()
+        else:
+            valid = source.is_file()
+        if not valid:
+            report.error(
+                "missing-source",
+                relative,
+                "origem declarada pelo instalador não existe",
+                "crie ou remova a referência antes de distribuir a configuração",
+            )
+
+    mapping_table = map_text.split("## Operação segura", 1)[0]
+    references = {
+        reference.rstrip("/")
+        for reference in re.findall(r"^\|\s*`([^`]+)`\s*\|", mapping_table, flags=re.M)
+    }
+    if not references:
+        report.error(
+            "configuration-map-empty",
+            "CONFIGURATION_MAP.md",
+            "o mapa não contém fontes versionadas em formato reconhecível",
+            "mantenha as fontes no primeiro campo das tabelas do mapa",
+        )
+        return
+
+    for relative in VALIDATION_REQUIRED_SOURCES:
+        if relative not in references:
+            report.error(
+                "configuration-map-drift",
+                "CONFIGURATION_MAP.md",
+                f"a fonte obrigatória {relative} não está documentada",
+                "adicione a origem ao mapa ou remova-a do contrato do instalador",
+            )
+
+    for reference in sorted(references):
+        source = root / reference
+        if reference.startswith("~"):
+            continue
+        valid = source.is_file() or source.is_dir()
+        if not valid:
+            report.error(
+                "map-source-missing",
+                reference,
+                "o mapa aponta para uma origem inexistente",
+                "corrija o caminho relativo no mapa ou restaure o arquivo",
+            )
+
+    for relative in (
+        "claude/CLAUDE.md",
+        "adapters/codex/AGENTS.md",
+        "adapters/gemini/GEMINI.md",
+    ):
+        path = root / relative
+        text = _validation_read(path, report, root)
+        if text is not None and "@WORKFLOW.md" not in text:
+            report.error(
+                "workflow-reference-missing",
+                relative,
+                "o adapter não referencia o WORKFLOW compartilhado",
+                "use @WORKFLOW.md para manter uma única fonte de regras",
+            )
+
+
+def _validate_syntax(root: Path, report: ValidationReport) -> None:
+    for path in _validation_files(root):
+        relative = _validation_relative(root, path)
+        if path.suffix.lower() == ".json":
+            text = _validation_read(path, report, root)
+            if text is None:
+                continue
+            try:
+                json.loads(text)
+            except json.JSONDecodeError as exc:
+                report.error(
+                    "invalid-json",
+                    relative,
+                    f"JSON inválido na linha {exc.lineno}, coluna {exc.colno}",
+                    "corrija a sintaxe JSON e rode validate novamente",
+                )
+
+        if path.suffix.lower() == ".py":
+            text = _validation_read(path, report, root)
+            if text is None:
+                continue
+            try:
+                compile(text, relative or path.name, "exec")
+            except SyntaxError as exc:
+                report.error(
+                    "invalid-python",
+                    relative,
+                    f"Python inválido na linha {exc.lineno or '?'}",
+                    "corrija a sintaxe antes de instalar",
+                )
+
+    toml_paths = [
+        path
+        for path in _validation_files(root)
+        if path.suffix.lower() == ".toml" or path.name.endswith(".toml.example")
+    ]
+    if not toml_paths:
+        return
+    if tomllib is None:
+        report.skip(
+            "toml-parser",
+            None,
+            "tomllib não está disponível neste Python",
+            "use Python 3.11+ ou valide TOML no CI",
+        )
+        return
+    for path in toml_paths:
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        try:
+            tomllib.loads(text)
+        except (tomllib.TOMLDecodeError, ValueError):
+            report.error(
+                "invalid-toml",
+                _validation_relative(root, path),
+                "TOML inválido",
+                "corrija a sintaxe TOML antes de instalar",
+            )
+
+
+def _validate_placeholders(root: Path, report: ValidationReport) -> None:
+    placeholder_re = re.compile(r"\{\{([^{}]+)\}\}")
+    for relative in VALIDATION_PORTABLE_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        for match in placeholder_re.finditer(text):
+            token = match.group(1)
+            if token not in VALIDATION_PLACEHOLDERS:
+                report.error(
+                    "unknown-placeholder",
+                    relative,
+                    "placeholder não possui resolução conhecida",
+                    "use um placeholder documentado em CONFIGURATION_MAP.md",
+                )
+        if text.count("{{") != text.count("}}"):
+            report.error(
+                "malformed-placeholder",
+                relative,
+                "há marcadores de placeholder sem fechamento correspondente",
+                "corrija os delimitadores {{...}}",
+            )
+
+
+def _validate_versions(root: Path, report: ValidationReport) -> None:
+    path = root / "versions.json"
+    text = _validation_read(path, report, root)
+    if text is None:
+        return
+    try:
+        versions = json.loads(text)
+    except json.JSONDecodeError:
+        return
+    tools = versions.get("tools") if isinstance(versions, dict) else None
+    if not isinstance(tools, dict):
+        report.error(
+            "versions-tools-missing",
+            "versions.json",
+            "o catálogo não possui o objeto tools",
+            "mantenha as referências de ferramentas no catálogo",
+        )
+    else:
+        doctor_keys = {item[1] for item in doctor_checks()}
+        for key in sorted(tools):
+            if key not in doctor_keys:
+                report.error(
+                    "doctor-coverage-missing",
+                    "versions.json",
+                    f"a ferramenta {key} não possui checagem correspondente no doctor",
+                    "adicione a checagem ao doctor ou remova a referência obsoleta",
+                )
+
+    runtime = versions.get("runtime", {}) if isinstance(versions, dict) else {}
+    port = runtime.get("headroom_port") if isinstance(runtime, dict) else None
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        report.error(
+            "invalid-headroom-port",
+            "versions.json",
+            "runtime.headroom_port não é uma porta válida",
+            "use um inteiro entre 1 e 65535",
+        )
+    if isinstance(runtime, dict) and runtime.get("headroom_scope") != "loopback-only":
+        report.error(
+            "headroom-scope",
+            "versions.json",
+            "o escopo do Headroom precisa ser loopback-only",
+            "mantenha o proxy local e não o exponha na rede",
+        )
+
+
+def _validate_wrapper_parity(root: Path, report: ValidationReport) -> None:
+    wrappers = {
+        "install.sh": "--validate|validate",
+        "install.ps1": "validate",
+    }
+    for relative, marker in wrappers.items():
+        path = root / relative
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        if "--validate" not in text or "validate" not in text:
+            report.error(
+                "wrapper-command-missing",
+                relative,
+                "o wrapper não expõe o comando validate",
+                "mantenha validate e --validate equivalentes nos dois shells",
+            )
+        if "aiconfig.py" not in text:
+            report.error(
+                "wrapper-engine-missing",
+                relative,
+                "o wrapper não encaminha para o motor comum",
+                "reutilize tools/aiconfig.py para evitar drift entre shells",
+            )
+
+
+def _validation_json_values(value, key: str = ""):
+    if isinstance(value, dict):
+        for name, child in value.items():
+            yield from _validation_json_values(child, str(name))
+    elif isinstance(value, list):
+        for child in value:
+            yield from _validation_json_values(child, key)
+    elif isinstance(value, str):
+        yield key, value
+
+
+def _is_loopback_url(value: str) -> bool:
+    match = re.match(r"^https?://([^/\s\"']+)", value, flags=re.I)
+    if not match:
+        return True
+    host = match.group(1).split("@")[-1].split(":", 1)[0].lower()
+    return host in {"127.0.0.1", "localhost", "::1"} or "{{" in host
+
+
+def _validate_portability_and_security(root: Path, report: ValidationReport) -> None:
+    secret_patterns = (
+        re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+        re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+        re.compile(
+            r"(?im)^\s*(?:export\s+)?[A-Z0-9_]*(?:API[_-]?KEY|SECRET|PASSWORD|TOKEN)"
+            r"\s*=\s*[\"']?(?!\{\{|\$)[A-Za-z0-9+/=_-]{20,}"
+        ),
+    )
+    absolute_path_re = re.compile(r"(?<![A-Za-z])(?:[A-Za-z]:[\\/]|/(?:Users|home|root)/)")
+    for path in _validation_files(root):
+        relative = _validation_relative(root, path)
+        if path.name in {".env", ".env.local", ".env.production"} or path.suffix in {".pem", ".key"}:
+            report.error(
+                "local-secret-file",
+                relative,
+                "arquivo de credencial local não pode ser distribuído",
+                "remova o arquivo do Git e mantenha somente um exemplo sem valores",
+            )
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        for pattern in secret_patterns:
+            if pattern.search(text):
+                report.error(
+                    "credential-pattern",
+                    relative,
+                    "padrão de credencial detectado (valor omitido)",
+                    "remova o segredo e use o mecanismo de credenciais local",
+                )
+                break
+
+    for relative in VALIDATION_PORTABLE_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        match = absolute_path_re.search(text)
+        if match:
+            report.error(
+                "machine-absolute-path",
+                relative,
+                "caminho absoluto de uma máquina foi encontrado no template",
+                "substitua-o por placeholder ou configuração local",
+            )
+
+    structured = (
+        root / "claude/settings.json",
+        root / "adapters/codex/config.toml.example",
+        root / "adapters/codex/headroom.config.toml.example",
+        root / "adapters/rtk/filters.toml",
+        root / ".env.example",
+    )
+    for path in structured:
+        if not path.is_file():
+            continue
+        relative = _validation_relative(root, path)
+        text = _validation_read(path, report, root)
+        if text is None:
+            continue
+        values = []
+        if path.suffix.lower() == ".json":
+            try:
+                values = list(_validation_json_values(json.loads(text)))
+            except json.JSONDecodeError:
+                continue
+        elif path.suffix.lower() == ".toml" or path.name.endswith(".toml.example"):
+            if tomllib is None:
+                continue
+            try:
+                values = list(_validation_json_values(tomllib.loads(text)))
+            except (tomllib.TOMLDecodeError, ValueError):
+                continue
+        else:
+            for line in text.splitlines():
+                if line.lstrip().startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values.append((key.strip(), value.strip().strip('"\'')))
+        for key, value in values:
+            if any(token in key.lower() for token in ("url", "endpoint", "host")) and not _is_loopback_url(value):
+                report.error(
+                    "non-loopback-endpoint",
+                    relative,
+                    "endpoint de configuração não aponta para loopback",
+                    "use localhost/127.0.0.1 ou mova o endpoint para a configuração local",
+                )
+                break
+
+    codex_template = root / "adapters/codex/config.toml.example"
+    if codex_template.is_file():
+        text = _validation_read(codex_template, report, root)
+        if text is not None:
+            sections = _toml_sections(text)
+            root_keys = _toml_keys(sections.get("", []))
+            if _toml_unquote(root_keys.get("model_provider", "")).lower() == "headroom":
+                report.error(
+                    "persistent-headroom-route",
+                    "adapters/codex/config.toml.example",
+                    "o baseline do Codex seleciona Headroom globalmente",
+                    "mova o provider para headroom.config.toml.example e mantenha o baseline direto",
+                )
+            if any(section.lower() == "[mcp_servers.headroom]" for section in sections):
+                report.error(
+                    "persistent-headroom-mcp",
+                    "adapters/codex/config.toml.example",
+                    "o baseline do Codex inicia o MCP Headroom globalmente",
+                    "mantenha integrações Headroom fora do baseline padrão",
+                )
+            for section, lines in sections.items():
+                if _project_path_from_section(section):
+                    report.error(
+                        "project-state-in-template",
+                        "adapters/codex/config.toml.example",
+                        "template contém estado específico de projeto",
+                        "mantenha permissões, sessões, memória e confiança no perfil local",
+                    )
+                    break
+                keys = {key.lower() for key in _toml_keys(lines)}
+                personal = keys.intersection({"history", "memory", "session", "credentials", "api_key", "token", "trust_level"})
+                if personal:
+                    report.error(
+                        "personal-state-in-template",
+                        "adapters/codex/config.toml.example",
+                        "template contém estado pessoal ou credencial",
+                        "remova a chave do template e mantenha-a no perfil local",
+                    )
+                    break
+
+    claude_settings = root / "claude/settings.json"
+    if claude_settings.is_file():
+        text = _validation_read(claude_settings, report, root)
+        if text is not None:
+            try:
+                settings = json.loads(text)
+            except json.JSONDecodeError:
+                settings = {}
+            env = settings.get("env", {}) if isinstance(settings, dict) else {}
+            if isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL"):
+                report.error(
+                    "persistent-headroom-route",
+                    "claude/settings.json",
+                    "o baseline do Claude persiste ANTHROPIC_BASE_URL",
+                    "remova a rota global e use headroom wrap claude somente na sessão opt-in",
+                )
+            hooks = json.dumps(settings.get("hooks", {}), ensure_ascii=False).lower()
+            if "headroom init hook ensure" in hooks or "headroom_healthcheck.py" in hooks:
+                report.error(
+                    "persistent-headroom-hook",
+                    "claude/settings.json",
+                    "o baseline do Claude inicia Headroom por hook",
+                    "remova o hook durável e deixe o ciclo de vida sob controle do usuário",
+                )
+
+
+def _validate_workflow(root: Path, report: ValidationReport) -> None:
+    path = root / "shared/WORKFLOW.md"
+    text = _validation_read(path, report, root)
+    if text is None:
+        return
+    required = ("validate", "dry-run", "apply", "doctor", "security", "quality", "commit")
+    missing = [term for term in required if term not in text]
+    if missing:
+        report.error(
+            "workflow-sequence-missing",
+            "shared/WORKFLOW.md",
+            "o fluxo compartilhado não documenta todas as etapas obrigatórias",
+            "documente validate, dry-run, apply, doctor, security, quality e commit",
+        )
+
+
+def _bash_for_validation() -> str | None:
+    if os.name != "nt":
+        return which("bash")
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    candidates = (
+        Path(program_files) / "Git" / "bin" / "bash.exe",
+        Path(program_files) / "Git" / "usr" / "bin" / "bash.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _validate_optional_checks(root: Path, report: ValidationReport) -> None:
+    executable = _bash_for_validation()
+    if not executable:
+        report.skip(
+            "bash-syntax",
+            "install.sh",
+            "Bash não está disponível neste ambiente",
+            "instale Bash ou deixe o CI Unix executar esta verificação",
+        )
+        return
+    path = root / "install.sh"
+    if not path.is_file():
+        return
+    try:
+        result = subprocess.run(
+            [executable, "-n", str(path)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        report.skip(
+            "bash-syntax",
+            "install.sh",
+            "Bash não pôde ser executado neste ambiente",
+            "repita a verificação em um runner Unix",
+        )
+        return
+    if result.returncode != 0:
+        report.error(
+            "invalid-bash",
+            "install.sh",
+            "wrapper Bash inválido",
+            "corrija a sintaxe do wrapper antes de instalar",
+        )
+
+
+def validate_repository(root: Path = ROOT) -> ValidationReport:
+    """Validate repository contracts without writing files or invoking installers."""
+    report = ValidationReport()
+    _validation_check(report, "structure", lambda: _validate_structure(root, report))
+    _validation_check(report, "syntax", lambda: _validate_syntax(root, report))
+    _validation_check(report, "placeholders", lambda: _validate_placeholders(root, report))
+    _validation_check(report, "versions", lambda: _validate_versions(root, report))
+    _validation_check(report, "wrappers", lambda: _validate_wrapper_parity(root, report))
+    _validation_check(report, "portability-security", lambda: _validate_portability_and_security(root, report))
+    _validation_check(report, "workflow", lambda: _validate_workflow(root, report))
+    _validation_check(report, "optional-tools", lambda: _validate_optional_checks(root, report))
+    return report
+
+
+def cmd_validate(args) -> int:
+    report = validate_repository()
+    if args.json:
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        report.print_human()
+    return 0 if report.ok else 1
+
+
 def cmd_doctor(_args) -> int:
     versions = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))
     esperado = versions.get("tools", {})
@@ -1125,8 +1886,8 @@ def cmd_doctor(_args) -> int:
     if porta:
         print(f"\n  HEADROOM_PORT = {porta}")
 
-        # Probe real da porta: um proxy configurado mas fora do ar derruba o Codex
-        # com erro críptico de stream. Aqui o motivo aparece na hora.
+        # A sondagem é somente leitura. Headroom é opt-in: proxy ausente não
+        # prejudica os agentes enquanto não houver roteamento persistente.
         st = proxy_status(porta)
         if st == "ok":
             print(
@@ -1134,10 +1895,6 @@ def cmd_doctor(_args) -> int:
                 f"http://127.0.0.1:{porta}/readyz"
             )
         else:
-            if which("headroom"):
-                acao = f"rode: headroom proxy --port {porta}  (ou o atalho de inicialização)"
-            else:
-                acao = f"instale o headroom (veja README.md) e rode: headroom proxy --port {porta}"
             if st.startswith("http"):
                 print(
                     f"  {_c('33', '!')}       headroom-proxy  respondeu HTTP {st.split()[-1]} "
@@ -1148,7 +1905,19 @@ def cmd_doctor(_args) -> int:
                     f"  {_c('33', '!')}       headroom-proxy  NÃO está respondendo em "
                     f"http://127.0.0.1:{porta}/readyz"
                 )
-            print(f"        {acao}")
+            print("        Headroom é opt-in; os perfis padrão continuam diretos aos provedores.")
+
+        route_findings = headroom_persistence_findings()
+        if route_findings:
+            print("\n  Roteamento Headroom persistente")
+            for finding in route_findings:
+                print(f"  {_c('33', '!')}       {finding}")
+            print(
+                "        risco de ConnectionRefused quando o proxy degrada; "
+                "veja HEADROOM.md > Recuperação"
+            )
+        else:
+            print("  ok       roteamento   nenhum vínculo global obrigatório com Headroom")
 
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     codex_config = codex_home / "config.toml"
@@ -1171,6 +1940,11 @@ def cmd_doctor(_args) -> int:
 
 
 def cmd_install(args) -> int:
+    preflight = validate_repository()
+    if not preflight.ok:
+        print("A instalação foi interrompida pelo preflight do repositório.")
+        preflight.print_human()
+        return 2
     ctx = Ctx(args)
     claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -1185,7 +1959,6 @@ def cmd_install(args) -> int:
     py = which("python3", "python") or sys.executable
     node = which("node") or "node"
     headroom = which("headroom", "headroom.exe") or "headroom"
-
     if ctx.dry_run:
         print(_c("1;33", "\n== simulação (--dry-run): nada será escrito =="))
     print(f"\n  destino Claude : {claude_home}")
@@ -1237,15 +2010,14 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    install_toml(
+        ROOT / "adapters/codex/headroom.config.toml.example",
+        codex_home / "headroom.config.toml",
+        ctx,
+        subst,
+    )
     if getattr(args, "harden_codex", False):
         harden_codex_config(codex_home / "config.toml", ctx)
-    install_file(
-        ROOT / "tools/headroom_healthcheck.py",
-        codex_home / "headroom_healthcheck.py",
-        ctx,
-        "Codex healthcheck Headroom",
-    )
-    install_json(ROOT / "adapters/codex/hooks.json", codex_home / "hooks.json", ctx, subst)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
@@ -1253,9 +2025,6 @@ def cmd_install(args) -> int:
 
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
-
-    head("Headroom")
-    ensure_headroom_deploy(ctx, which("headroom", "headroom.exe"))
 
     head("Resumo")
     if ctx.dry_run:
@@ -1306,6 +2075,10 @@ def main() -> int:
     g.add_argument("--keep-existing", action="store_true", help="conflito: mantém o local")
     g.add_argument("--prefer-repo", action="store_true", help="conflito: usa o do repo")
     i.set_defaults(func=cmd_install)
+
+    v = sub.add_parser("validate", help="valida contratos do repositório sem escrever")
+    v.add_argument("--json", action="store_true", help="emite um relatório JSON para CI")
+    v.set_defaults(func=cmd_validate)
 
     d = sub.add_parser("doctor", help="verifica as ferramentas externas")
     d.set_defaults(func=cmd_doctor)

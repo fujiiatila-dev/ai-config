@@ -51,11 +51,12 @@ Inicia uma mudança nova. Gera **todos** os artefatos de planejamento de uma vez
 
 Implementa as tarefas de `tasks.md` sequencialmente:
 
-1. Lê o primeiro item incompleto (`- [ ]`)
-2. Edita os arquivos necessários
-3. Roda testes e lint
-4. Marca o item como concluído (`- [x]`)
-5. Repete até todos os itens estarem feitos ou encontrar um bloqueio
+1. Executa o preflight do projeto, quando houver (`python tools/aiconfig.py validate`)
+2. Lê o primeiro item incompleto (`- [ ]`)
+3. Edita os arquivos necessários
+4. Roda testes e lint
+5. Marca o item como concluído (`- [x]`)
+6. Repete até todos os itens estarem feitos ou encontrar um bloqueio
 
 Se o humano precisar ajustar o plano durante a execução:
 `/opsx:update <nome> - <instrução>` — atualiza artefatos sem tocar no código.
@@ -72,6 +73,11 @@ Finaliza a mudança:
 1. Valida que todos os tasks estão completos
 2. Oferece sync dos delta specs (se ainda não foi feito)
 3. Move a pasta para `openspec/changes/archive/YYYY-MM-DD-<nome>/`
+
+Antes do archive, execute o fluxo operacional `validate → dry-run → apply →
+doctor → security → quality → commit`. O `validate` é somente leitura e deve
+ser o primeiro gate; o `dry-run` confirma o impacto nos perfis locais; as
+auditorias e a qualidade só podem ser declaradas quando realmente executadas.
 
 ## Estrutura de diretórios
 

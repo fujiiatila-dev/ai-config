@@ -24,10 +24,12 @@ $Rest = @()
 foreach ($a in $args) {
     switch -Regex ($a) {
         '^(--doctor|doctor)$' { $Cmd = 'doctor' }
+        '^(--validate|validate)$' { $Cmd = 'validate' }
         '^(-h|--help)$' {
             Write-Host @'
 uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
      [--update-tools] [--harden-codex]
+     .\install.ps1 --validate [--json]
      .\install.ps1 --doctor
 
   --dry-run        mostra o que faria, sem escrever nada
@@ -37,6 +39,7 @@ uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-t
   --skip-tools     sincroniza so configuracoes, sem instalar ferramentas
   --update-tools   atualiza ferramentas gerenciadas para as referencias do repo
   --harden-codex   aplica defaults seguros ao Codex e remove confianca ampla exata
+  --validate       valida o checkout sem escrever nem instalar ferramentas
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
