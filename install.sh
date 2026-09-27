@@ -24,11 +24,15 @@ ARGS=()
 for a in "$@"; do
     case "$a" in
         --doctor|doctor) CMD=doctor ;;
+        --validate|validate) CMD=validate ;;
+        --ca-bundle|ca-bundle) CMD=ca-bundle ;;
         -h|--help)
             cat <<'USO'
 uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
      [--update-tools] [--harden-codex]
+     ./install.sh --validate [--json]
      ./install.sh --doctor
+     ./install.sh --ca-bundle [--dry-run] [--output <arquivo>]
 
   --dry-run        mostra o que faria, sem escrever nada
   --keep-existing  em conflito, mantém sempre o valor atual
@@ -37,7 +41,9 @@ uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-to
   --skip-tools     sincroniza só configurações, sem instalar ferramentas
   --update-tools   atualiza ferramentas gerenciadas para as referências do repo
   --harden-codex   aplica defaults seguros ao Codex e remove confiança ampla exata
+  --validate       valida o checkout sem escrever nem instalar ferramentas
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
+  --ca-bundle      gera bundle de CA para Headroom/uv/pip atrás de inspeção TLS
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
 Gitleaks e Trivy. Nada é sobrescrito sem backup.

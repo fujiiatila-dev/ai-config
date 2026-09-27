@@ -1,0 +1,17 @@
+# Perfil opt-in para iniciar o Codex através de um proxy Headroom já saudável.
+# Use `codex --profile headroom`; o config.toml padrão continua direto na OpenAI.
+model_provider = "headroom"
+
+[model_providers.headroom]
+name = "Headroom local proxy (opt-in)"
+base_url = "http://127.0.0.1:{{HEADROOM_PORT}}/v1"
+wire_api = "responses"
+supports_websockets = false
+requires_openai_auth = true
+
+[mcp_servers.headroom]
+command = "{{HEADROOM}}"
+args = ["mcp", "serve"]
+
+[mcp_servers.headroom.env]
+HEADROOM_PROXY_URL = "http://127.0.0.1:{{HEADROOM_PORT}}"

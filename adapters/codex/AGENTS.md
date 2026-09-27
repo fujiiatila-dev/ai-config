@@ -6,6 +6,10 @@ segurança, RTK e Headroom.
 
 @WORKFLOW.md
 
+Antes de sincronizar, valide o checkout (`./install.sh --validate` ou
+`.\install.ps1 --validate`) e revise o `--dry-run`. A instalação efetiva repete
+o preflight antes de escrever no perfil do Codex.
+
 ## Configuração do Codex
 
 O instalador oferece um baseline portátil e restrito em

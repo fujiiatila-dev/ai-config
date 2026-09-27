@@ -13,7 +13,13 @@ Audite o projeto atual contra o padrão FreedomAI e melhore o score.
    ```powershell
    $env:PYTHONUTF8='1'; aurum check . --json
    ```
-   (Se `aurum` não resolver no PATH, use `$env:APPDATA\Python\Python314\Scripts\aurum.exe`.)
+   Se `aurum` não resolver no PATH (`where.exe aurum` / `which aurum`), pare e
+   informe que o gate não pôde ser executado; a instalação correta (via
+   `uv tool install` do repositório generalrodolfao/standards) está no
+   `TOOLS.md` do ai-config. Não instale o pacote `aurum` do PyPI (é outro
+   projeto) e não declare score.
+   Falso positivo conhecido na v0.4.0: `GIT-IGNORE-005` reprova `.gitignore`
+   com `!.env.example`; não remova a negação, registre como falso positivo.
    Guarde o score e a lista de checks `failed`.
 
 2. **Triagem**: separe os checks reprovados em:

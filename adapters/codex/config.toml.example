@@ -6,13 +6,6 @@
 approval_policy = "on-request"
 approvals_reviewer = "user"
 sandbox_mode = "workspace-write"
-model_provider = "headroom"
-
-[model_providers.headroom]
-name = "Headroom local proxy"
-base_url = "http://127.0.0.1:{{HEADROOM_PORT}}/v1"
-supports_websockets = true
-requires_openai_auth = true
 
 [windows]
 sandbox = "unelevated"

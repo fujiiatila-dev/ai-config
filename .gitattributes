@@ -1,0 +1,5 @@
+# Scripts executados por sh/bash precisam de LF mesmo com core.autocrlf=true.
+*.sh                                   text eol=lf
+claude/skills/impeccable/scripts/impeccable text eol=lf
+*.cmd                                  text eol=crlf
+*.ps1                                  text eol=crlf
