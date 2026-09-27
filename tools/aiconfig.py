@@ -57,6 +57,7 @@ VERSION_PROBE_TIMEOUTS = {
     "semgrep": 20.0,
     "headroom": 15.0,
     "aurum": 10.0,
+    "openspec": 10.0,
     "codex-security": 10.0,
 }
 # Sem isto o Semgrep consulta a rede antes de imprimir a versão (~100 s atrás
