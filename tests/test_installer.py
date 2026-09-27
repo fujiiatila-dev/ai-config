@@ -672,11 +672,20 @@ class ToolInstallationTests(unittest.TestCase):
             mock.patch.object(AICONFIG.time, "monotonic", side_effect=[0.0, 0.0, 2.0]),
             mock.patch.object(AICONFIG.subprocess, "run", return_value=None),
             mock.patch.object(AICONFIG.subprocess, "Popen", return_value=process) as run,
+            # PID falso: no Unix, nunca sinalizar um grupo de processos real.
+            mock.patch.object(AICONFIG.os, "getpgid", create=True, return_value=123),
+            mock.patch.object(AICONFIG.os, "killpg", create=True) as killpg,
         ):
             self.assertIsNone(AICONFIG.tool_version("stuck"))
 
         run.assert_called_once()
-        self.assertEqual(run.call_args.kwargs["creationflags"], AICONFIG.subprocess.CREATE_NEW_PROCESS_GROUP)
+        if os.name == "nt":
+            self.assertEqual(
+                run.call_args.kwargs["creationflags"], AICONFIG.subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            self.assertTrue(run.call_args.kwargs["start_new_session"])
+            killpg.assert_called_once()
 
     def test_codex_doctor_detects_broad_trust_and_elevated_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -779,7 +788,6 @@ class ToolInstallationTests(unittest.TestCase):
         self.assertIn("other = true", updated)
 
 
-@unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")
 class ToolInteropTests(unittest.TestCase):
     def _claude_home(self, temp: str, settings: dict) -> Path:
         home = Path(temp) / "claude"
@@ -951,6 +959,7 @@ class ToolInteropTests(unittest.TestCase):
         self.assertIn("wrapper-command-missing", codes)
 
 
+@unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")
 class PowerShellInstallerTests(unittest.TestCase):
     def test_invalid_dry_run_preserves_error_and_skips_tools(self) -> None:
         powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")

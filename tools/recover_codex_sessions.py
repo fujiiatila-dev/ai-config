@@ -333,9 +333,12 @@ def create_backup(
             shutil.copy2(source, target)
         manifest["files"][name] = {"sha256": _sha256(target), "size": target.stat().st_size}
 
+    # Rollouts chegam resolvidos; CODEX_HOME pode vir por symlink (/var →
+    # /private/var no macOS) ou nome curto 8.3 do Windows (RUNNER~1).
+    resolved_home = codex_home.resolve()
     for rollout in rollout_backups:
         try:
-            relative = rollout.path.relative_to(codex_home)
+            relative = rollout.path.resolve().relative_to(resolved_home)
         except ValueError as error:
             raise ValueError(f"Rollout is outside CODEX_HOME: {rollout.path}") from error
         target = backup_dir / relative

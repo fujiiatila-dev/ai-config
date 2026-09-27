@@ -58,3 +58,14 @@
 - [x] 6.3 `.gitattributes` com LF para scripts `sh` e bit de execução no Git.
 - [x] 6.4 Desfazer no perfil local a mistura 3.9.1/4.3.1 criada pelo merge
   (72 arquivos movidos para `~/.claude/backups/`) e remover o hook órfão.
+
+## 7. CI (vermelho desde 601604a na main)
+
+- [x] 7.1 `recover_codex_sessions.create_backup` compara caminhos resolvidos:
+  `CODEX_HOME` via symlink (`/var` → `/private/var`) ou nome 8.3 (`RUNNER~1`)
+  fazia o backup falhar com "Rollout is outside CODEX_HOME". Reproduzido
+  localmente com `TMP` numa junction; corrigido.
+- [x] 7.2 `test_tool_version_stops_after_shared_deadline` verifica a flag de
+  cada plataforma e isola `os.killpg` (o teste sinalizava um PID falso no Unix).
+- [x] 7.3 O decorador Windows-only voltou para `PowerShellInstallerTests`; os
+  17 testes de `ToolInteropTests` passam a rodar em Linux e macOS.
