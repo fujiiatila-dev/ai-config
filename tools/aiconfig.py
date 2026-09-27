@@ -27,6 +27,8 @@ import re
 import shlex
 import signal
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -49,6 +51,29 @@ END = "<!-- ai-config:end -->"
 DEFAULT_HEADROOM_PORT = 48731
 VERSION_PROBE_TIMEOUT_SEC = 3.0
 NPM_ROOT_TIMEOUT_SEC = 3.0
+# CLIs em Python carregam centenas de módulos antes de responder --version, e
+# shims .cmd do npm pagam a partida do Node; a frio passam fácil de 3 s.
+VERSION_PROBE_TIMEOUTS = {
+    "semgrep": 20.0,
+    "headroom": 15.0,
+    "aurum": 10.0,
+    "codex-security": 10.0,
+}
+# Sem isto o Semgrep consulta a rede antes de imprimir a versão (~100 s atrás
+# de inspeção TLS) e o doctor exibiria "?".
+VERSION_PROBE_ENV = {"SEMGREP_ENABLE_VERSION_CHECK": "0", "SEMGREP_SEND_METRICS": "off"}
+TLS_PROBE_HOST = "api.anthropic.com"
+TLS_PROBE_TIMEOUT_SEC = 4.0
+SERVER_AUTH_OID = "1.3.6.1.5.5.7.3.1"
+# Regras que, somadas ao hook do RTK (`docker ps` → `rtk docker ps`), aprovam
+# qualquer comando que o RTK saiba envolver, ou comandos que a documentação
+# proíbe (`headroom init --global`, `headroom install`).
+BROAD_TOOL_PERMISSIONS = (
+    "Bash(rtk:*)",
+    "PowerShell(rtk:*)",
+    "Bash(headroom:*)",
+    "PowerShell(headroom:*)",
+)
 
 MANAGED_TOOL_VERSION_KEYS = {
     "openspec": "openspec",
@@ -607,6 +632,27 @@ def which(*names: str) -> str | None:
     return None
 
 
+def is_store_alias(path: str) -> bool:
+    """True para os aliases de execução da Microsoft Store (`WindowsApps`).
+
+    O alias `python3.exe` existe mesmo sem Python instalado pela Store e sai
+    com código 9009, derrubando a status line que o usa.
+    """
+    parts = re.split(r"[\\/]+", path.lower())
+    return "windowsapps" in parts
+
+
+def resolve_python() -> str:
+    """Interpretador para {{PYTHON}}: o que roda o instalador, nunca um alias."""
+    if sys.executable and not is_store_alias(sys.executable):
+        return sys.executable
+    for name in ("python3", "python"):
+        found = which(name)
+        if found and not is_store_alias(found):
+            return found
+    return sys.executable or "python3"
+
+
 def _stop_version_probe(process: subprocess.Popen) -> None:
     """Stop a version probe and its descendants without leaving pipes open."""
     if os.name == "nt":
@@ -640,6 +686,7 @@ def _probe_version(exe: str, args: tuple[str, ...], timeout: float) -> tuple[int
         "stderr": subprocess.PIPE,
         "text": True,
         "errors": "replace",
+        "env": {**os.environ, **VERSION_PROBE_ENV},
     }
     if os.name == "nt":
         options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -659,9 +706,9 @@ def _probe_version(exe: str, args: tuple[str, ...], timeout: float) -> tuple[int
     return process.returncode, stdout, stderr
 
 
-def tool_version(exe: str) -> str | None:
+def tool_version(exe: str, timeout: float | None = None) -> str | None:
     """Read a CLI version without allowing one broken executable to hang doctor."""
-    deadline = time.monotonic() + VERSION_PROBE_TIMEOUT_SEC
+    deadline = time.monotonic() + (timeout or VERSION_PROBE_TIMEOUT_SEC)
     for args in (("--version",), ("version",)):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -754,6 +801,20 @@ def _tool_reference(tool_name: str) -> str | None:
     return version if isinstance(version, str) and version else None
 
 
+def pip_needs_truststore_flag() -> bool:
+    """pip 22.2–24.1 só usa o repositório de CAs do sistema com opt-in.
+
+    A partir do 24.2 o truststore é o padrão; antes do 22.2 a flag não existe.
+    """
+    try:
+        from importlib.metadata import version
+
+        parts = tuple(int(p) for p in re.findall(r"\d+", version("pip"))[:2])
+    except Exception:
+        return False
+    return (22, 2) <= parts < (24, 2)
+
+
 def tool_install_command(tool_name: str, upgrade: bool = False) -> list[str] | None:
     """Build an install/upgrade command using available package managers."""
     reference = _tool_reference(tool_name)
@@ -788,6 +849,8 @@ def tool_install_command(tool_name: str, upgrade: bool = False) -> list[str] | N
             "--timeout",
             "15",
         ]
+        if pip_needs_truststore_flag():
+            command.append("--use-feature=truststore")
         if upgrade:
             command.append("--upgrade")
         command.append(package)
@@ -817,6 +880,10 @@ def tool_install_command(tool_name: str, upgrade: bool = False) -> list[str] | N
             "--id",
             package["winget"],
             "--exact",
+            # A origem msstore falha (0x8a15005e) quando um antivírus reassina
+            # o TLS; os pacotes gerenciados estão todos na origem winget.
+            "--source",
+            "winget",
         ]
         if reference:
             command.extend(["--version", reference])
@@ -929,6 +996,162 @@ def configured_headroom_port() -> str:
     if not 1 <= port <= 65535:
         raise ValueError("HEADROOM_PORT deve estar entre 1 e 65535")
     return str(port)
+
+
+# ── TLS atrás de inspeção HTTPS ──────────────────────────────────────────────
+# Antivírus (AVG/Avast Web Shield, Kaspersky…) e proxies corporativos reassinam
+# o HTTPS com uma CA que só existe no repositório do sistema. Ferramentas Python
+# (Headroom, uv, pip, Semgrep) validam contra o bundle Mozilla/certifi e falham
+# com CERTIFICATE_VERIFY_FAILED. A saída é um bundle com as duas origens,
+# usado por sessão — nunca desligar a verificação.
+def default_ca_bundle_path() -> Path:
+    override = os.environ.get("AICONFIG_CA_BUNDLE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "ai-config" / "ca-bundle.pem"
+
+
+def mozilla_ca_file() -> str | None:
+    """Bundle certifi, do pacote ou o vendorizado pelo pip (sem dependência nova)."""
+    try:
+        import certifi  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from pip._vendor import certifi  # type: ignore[no-redef]
+        except ImportError:
+            return None
+    return certifi.where()
+
+
+def windows_trusted_roots() -> list[str]:
+    """PEMs das raízes do Windows válidas para autenticar servidores."""
+    enum = getattr(ssl, "enum_certificates", None)
+    if enum is None:
+        return []
+    pems: list[str] = []
+    seen: set[bytes] = set()
+    for store in ("ROOT", "CA"):
+        try:
+            entries = enum(store)
+        except OSError:
+            continue
+        for der, encoding, trust in entries:
+            if encoding != "x509_asn" or der in seen:
+                continue
+            if trust is not True and SERVER_AUTH_OID not in trust:
+                continue
+            seen.add(der)
+            pems.append(ssl.DER_cert_to_PEM_cert(der))
+    return pems
+
+
+def build_ca_bundle() -> tuple[str, int]:
+    """Conteúdo do bundle (certifi + Windows) e quantas raízes vieram do sistema."""
+    mozilla = mozilla_ca_file()
+    if not mozilla:
+        raise RuntimeError("bundle certifi indisponível neste Python (instale pip ou certifi)")
+    roots = windows_trusted_roots()
+    parts = [Path(mozilla).read_text(encoding="ascii").rstrip("\n"), *roots]
+    return "\n".join(parts) + "\n", len(roots)
+
+
+def _tls_handshake(context: ssl.SSLContext, host: str, timeout: float) -> dict:
+    with socket.create_connection((host, 443), timeout=timeout) as raw:
+        with context.wrap_socket(raw, server_hostname=host) as tls:
+            return tls.getpeercert() or {}
+
+
+def tls_inspection_status(
+    host: str = TLS_PROBE_HOST, timeout: float = TLS_PROBE_TIMEOUT_SEC
+) -> tuple[str, str | None]:
+    """Compara o handshake com certifi e com o repositório do sistema.
+
+    Retorna ('ok'|'inspecionado'|'falha'|'ignorado', emissor). Somente leitura:
+    abre um socket TLS, não envia requisição HTTP.
+    """
+    if os.environ.get("AICONFIG_DOCTOR_OFFLINE", "").strip():
+        return "ignorado", None
+    mozilla = mozilla_ca_file()
+    if not mozilla:
+        return "ignorado", None
+    try:
+        _tls_handshake(ssl.create_default_context(cafile=mozilla), host, timeout)
+        return "ok", None
+    except ssl.SSLCertVerificationError:
+        pass
+    except (OSError, ssl.SSLError):
+        return "ignorado", None
+    try:
+        cert = _tls_handshake(ssl.create_default_context(), host, timeout)
+    except (OSError, ssl.SSLError):
+        return "falha", None
+    issuer = {k: v for rdn in cert.get("issuer", ()) for k, v in rdn}
+    return "inspecionado", issuer.get("commonName") or issuer.get("organizationName")
+
+
+# ── configuração local do Claude e do RTK ────────────────────────────────────
+def _command_executable(command: str) -> str | None:
+    command = command.strip()
+    if not command:
+        return None
+    if command[0] in "\"'":
+        end = command.find(command[0], 1)
+        return command[1:end] if end > 0 else None
+    return command.split()[0]
+
+
+def claude_local_findings(claude_home: Path | None = None) -> list[str]:
+    """Problemas da instalação local do Claude que quebram RTK ou a statusLine."""
+    claude_home = claude_home or Path(
+        os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")
+    )
+    settings_path = claude_home / "settings.json"
+    if not settings_path.exists():
+        return []
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["settings.json não pôde ser lido"]
+    if not isinstance(settings, dict):
+        return ["settings.json não é um objeto JSON"]
+
+    findings: list[str] = []
+    status_line = settings.get("statusLine")
+    if isinstance(status_line, dict) and isinstance(status_line.get("command"), str):
+        exe = _command_executable(status_line["command"])
+        if exe and is_store_alias(exe):
+            findings.append(
+                "statusLine usa o alias da Microsoft Store (WindowsApps); "
+                "rode o instalador com --prefer-repo ou troque pelo caminho do Python real"
+            )
+        elif exe and not Path(exe).exists() and not shutil.which(exe):
+            findings.append(f"statusLine aponta para um executável inexistente: {Path(exe).name}")
+
+    hooks = json.dumps(settings.get("hooks", {}).get("PreToolUse", []))
+    if "rtk hook claude" not in hooks:
+        findings.append(
+            "hook RTK ausente em PreToolUse; comandos de shell não são comprimidos "
+            "(rode o instalador para registrar `rtk hook claude`)"
+        )
+
+    allow = settings.get("permissions", {}).get("allow", [])
+    broad = [rule for rule in BROAD_TOOL_PERMISSIONS if isinstance(allow, list) and rule in allow]
+    if broad:
+        findings.append(
+            f"allowlist ampla: {', '.join(broad)}; com o hook do RTK, qualquer comando "
+            "reescrito para `rtk <cmd>` é aprovado sem pergunta — remova e mantenha "
+            "só as regras de leitura do repo (veja TOOLS.md > Permissões)"
+        )
+    return findings
+
+
+def rtk_identity_ok(exe: str) -> bool:
+    """O `rtk` do PATH é o Rust Token Killer (tem `gain`), não o Rust Type Kit."""
+    try:
+        returncode, _stdout, _stderr = _probe_version(exe, ("gain", "--help"), 3.0)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return returncode == 0
 
 
 def _windows_persistent_provider_env() -> set[tuple[str, str]]:
@@ -1570,13 +1793,14 @@ def _validate_wrapper_parity(root: Path, report: ValidationReport) -> None:
         text = _validation_read(path, report, root)
         if text is None:
             continue
-        if "--validate" not in text or "validate" not in text:
-            report.error(
-                "wrapper-command-missing",
-                relative,
-                "o wrapper não expõe o comando validate",
-                "mantenha validate e --validate equivalentes nos dois shells",
-            )
+        for command in ("validate", "doctor", "ca-bundle"):
+            if f"--{command}" not in text:
+                report.error(
+                    "wrapper-command-missing",
+                    relative,
+                    f"o wrapper não expõe o comando {command}",
+                    f"mantenha {command} e --{command} equivalentes nos dois shells",
+                )
         if "aiconfig.py" not in text:
             report.error(
                 "wrapper-engine-missing",
@@ -1869,13 +2093,40 @@ def cmd_doctor(_args) -> int:
             print(f"  {_c('33', 'ausente')}  {nome:<10} — {nota}")
             faltando.append(nome)
             continue
-        v = tool_version(exe) if exe else package_version
+        v = tool_version(exe, VERSION_PROBE_TIMEOUTS.get(nome)) if exe else package_version
         v = v or "?"
         ref = esperado.get(chave)
         marca = ""
         if ref and v != "?" and v != ref:
             marca = _c("2", f" (referência do repo: {ref})")
         print(f"  {_c('32', 'ok')}       {nome:<10} {v}{marca}")
+        if nome == "rtk" and exe and not rtk_identity_ok(exe):
+            print(
+                f"  {_c('33', '!')}       rtk        `rtk gain` falhou: o rtk do PATH não é o "
+                "Rust Token Killer (colisão com Rust Type Kit?)"
+            )
+
+    local_findings = claude_local_findings()
+    if local_findings:
+        print("\n  Claude Code local")
+        for finding in local_findings:
+            print(f"  {_c('33', '!')}       {finding}")
+
+    tls, issuer = tls_inspection_status()
+    if tls == "inspecionado":
+        print(
+            f"\n  {_c('33', '!')}       tls         HTTPS reassinado por "
+            f"{issuer or 'CA local'}; Headroom, uv, pip e Semgrep falham com "
+            "CERTIFICATE_VERIFY_FAILED"
+        )
+        print(
+            "        gere o bundle com  ./install.sh --ca-bundle  e veja "
+            "TOOLS.md > TLS interceptado"
+        )
+    elif tls == "falha":
+        print(f"\n  {_c('33', '!')}       tls         handshake com {TLS_PROBE_HOST} falhou")
+    elif tls == "ok":
+        print(f"\n  {_c('32', 'ok')}       tls         cadeia pública (sem inspeção HTTPS)")
 
     try:
         porta = configured_headroom_port()
@@ -1956,7 +2207,7 @@ def cmd_install(args) -> int:
         warn(str(exc))
         return 2
 
-    py = which("python3", "python") or sys.executable
+    py = resolve_python()
     node = which("node") or "node"
     headroom = which("headroom", "headroom.exe") or "headroom"
     if ctx.dry_run:
@@ -2049,6 +2300,37 @@ def cmd_install(args) -> int:
     return 0
 
 
+def cmd_ca_bundle(args) -> int:
+    """Gera o bundle de CA local para ferramentas Python atrás de inspeção TLS."""
+    if os.name != "nt":
+        print(
+            "Fora do Windows, use o bundle do sistema, que já inclui CAs corporativas "
+            "instaladas:\n  export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt  "
+            "# Debian/Ubuntu\n  export REQUESTS_CA_BUNDLE=\"$SSL_CERT_FILE\""
+        )
+        return 0
+    try:
+        content, count = build_ca_bundle()
+    except RuntimeError as exc:
+        warn(str(exc))
+        return 1
+    dest = Path(args.output).expanduser() if args.output else default_ca_bundle_path()
+    if args.dry_run:
+        print(f"  (--dry-run) {count} raiz(es) do Windows + certifi → {dest}")
+        return 0
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="ascii")
+    add(f"{dest} ({count} raiz(es) do Windows + certifi)")
+    shown = str(dest).replace(str(Path.home()), "$HOME", 1)
+    print(
+        "\n  Use somente na sessão que roda Headroom/uv/pip (nunca persista):\n"
+        f"    $env:SSL_CERT_FILE = \"{shown}\"\n"
+        "    $env:REQUESTS_CA_BUNDLE = $env:SSL_CERT_FILE\n"
+        "  Regenere após instalar/remover um antivírus ou certificado corporativo."
+    )
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="aiconfig", description=__doc__)
     sub = p.add_subparsers(dest="cmd")
@@ -2082,6 +2364,14 @@ def main() -> int:
 
     d = sub.add_parser("doctor", help="verifica as ferramentas externas")
     d.set_defaults(func=cmd_doctor)
+
+    b = sub.add_parser(
+        "ca-bundle",
+        help="gera bundle de CA (certifi + Windows) para ferramentas Python atrás de inspeção TLS",
+    )
+    b.add_argument("--dry-run", action="store_true", help="mostra o que faria")
+    b.add_argument("--output", help="destino (padrão: ~/.config/ai-config/ca-bundle.pem)")
+    b.set_defaults(func=cmd_ca_bundle)
 
     args = p.parse_args()
     if not args.cmd:

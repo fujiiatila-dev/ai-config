@@ -17,6 +17,8 @@ Origem no repositório → destino na máquina, e como cada um é mesclado.
 | `adapters/codex/config.toml.example` | `~/.codex/config.toml` | TOML, por seção/chave |
 | `adapters/codex/headroom.config.toml.example` | `~/.codex/headroom.config.toml` | perfil TOML opt-in, por seção/chave |
 | `HEADROOM.md` | documentação do modo opt-in e recuperação | somente documentação; não é instalado |
+| `TOOLS.md` | guia de uso de cada ferramenta e dos avisos do `doctor` | somente documentação; não é instalado |
+| — (gerado por `--ca-bundle`) | `~/.config/ai-config/ca-bundle.pem` | específico da máquina; nunca versionado nem persistido em variável global |
 | `tools/recover_codex_sessions.py` | reparo explícito do estado local do Codex | somente sob comando; cria backup e não é executado pelo instalador |
 | `adapters/gemini/GEMINI.md` | `~/.gemini/GEMINI.md` | bloco `ai-config` |
 | `adapters/rtk/filters.toml` | `~/.config/rtk/filters.toml` | TOML, por seção/chave |
@@ -86,7 +88,7 @@ para que o repositório não carregue caminho absoluto de ninguém:
 
 | marcador | vira |
 | --- | --- |
-| `{{PYTHON}}` | caminho do `python3`/`python` encontrado |
+| `{{PYTHON}}` | o Python que roda o instalador; nunca o alias `WindowsApps` da Microsoft Store |
 | `{{NODE}}` | caminho do `node` encontrado |
 | `{{CLAUDE_HOME}}` | `CLAUDE_CONFIG_DIR` ou `~/.claude` |
 | `{{CODEX_HOME}}` | `CODEX_HOME` ou `~/.codex` |

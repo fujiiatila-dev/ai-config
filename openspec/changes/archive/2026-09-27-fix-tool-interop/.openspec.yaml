@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-27
+goal: Corrigir as falhas reais de uso do Headroom e do RTK, atualizar a
+  toolchain de referência e documentar o uso das ferramentas do repositório.

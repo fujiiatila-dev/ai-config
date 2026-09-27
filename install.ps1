@@ -25,12 +25,14 @@ foreach ($a in $args) {
     switch -Regex ($a) {
         '^(--doctor|doctor)$' { $Cmd = 'doctor' }
         '^(--validate|validate)$' { $Cmd = 'validate' }
+        '^(--ca-bundle|ca-bundle)$' { $Cmd = 'ca-bundle' }
         '^(-h|--help)$' {
             Write-Host @'
 uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
      [--update-tools] [--harden-codex]
      .\install.ps1 --validate [--json]
      .\install.ps1 --doctor
+     .\install.ps1 --ca-bundle [--dry-run] [--output <arquivo>]
 
   --dry-run        mostra o que faria, sem escrever nada
   --keep-existing  em conflito, mantem sempre o valor atual
@@ -41,6 +43,7 @@ uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-t
   --harden-codex   aplica defaults seguros ao Codex e remove confianca ampla exata
   --validate       valida o checkout sem escrever nem instalar ferramentas
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
+  --ca-bundle      gera bundle de CA para Headroom/uv/pip atras de inspecao TLS
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
 Gitleaks e Trivy. Nada e sobrescrito sem backup.

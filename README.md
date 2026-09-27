@@ -5,6 +5,24 @@ skills, subagentes e as camadas de economia de tokens, especificação,
 auditoria de qualidade e segurança. O mesmo padrão para Claude Code, Codex e
 Gemini/Antigravity, em qualquer máquina.
 
+## O que vem no repositório
+
+| Ferramenta | Para que serve | Como você usa |
+| --- | --- | --- |
+| **RTK** | compacta a saída do shell (git, npm, pytest…) | automático via hook; `rtk gain` mostra a economia |
+| **Headroom** | comprime o contexto enviado ao modelo | opt-in: `headroom wrap claude` ou `codex --profile headroom` |
+| **OpenSpec** | especificação antes do código | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` |
+| **Semgrep, Gitleaks, Trivy** | SAST, segredos e CVEs | skill `security-audit` |
+| **aurum** | gate de qualidade (score ≥ 70%) | skill `qualidade` |
+| **Impeccable** | design e revisão de UI | skill `impeccable` |
+| **Subagentes** | `openspec-engineer`, `security-analyst`, `qa`, `tester`… | o Claude Code delega |
+| **Status line** | modelo, branch e pasta no rodapé | automático |
+
+**[TOOLS.md](TOOLS.md) é o guia de uso**: comandos do dia a dia, o que cada
+aviso do `--doctor` significa e como resolver os problemas conhecidos, como
+TLS interceptado por antivírus, statusLine vazia no Windows e Headroom que não
+sobe.
+
 ## Instalação
 
 ```bash
@@ -58,6 +76,7 @@ o miolo do bloco é atualizado.
 ./install.sh --validate          # valida o checkout sem escrever nada
 ./install.sh --validate --json   # relatório estruturado para CI
 ./install.sh --doctor           # verifica runtimes, agentes e ferramentas
+./install.sh --ca-bundle        # bundle de CA para Headroom/uv/pip atrás de inspeção TLS
 ```
 
 No Windows, use as mesmas opções com `.\install.ps1`. `--update-tools` é
@@ -152,39 +171,46 @@ para Gitleaks/Trivy (`winget`, `choco` ou `brew`). O modo `--update-tools`
 mostra e executa esses comandos somente quando solicitado.
 
 RTK, Headroom e aurum continuam opcionais e são instalados pelos seus canais
-próprios. Codex Security exige autenticação e nunca é instalado
-automaticamente.
+próprios (veja [TOOLS.md](TOOLS.md)). Codex Security exige autenticação e nunca
+é instalado automaticamente.
+
+Se `pip`, `uv` ou `winget` falharem com `CERTIFICATE_VERIFY_FAILED`,
+`UnknownIssuer` ou `0x8a15005e`, há inspeção HTTPS na máquina: rode
+`--doctor` e siga [TOOLS.md > TLS interceptado](TOOLS.md#tls-interceptado).
 
 ## Ferramentas e versões de referência
 
-O `./install.sh --doctor` compara as versões locais com estas referências.
-Divergências geram aviso, não impedem a instalação.
+O `./install.sh --doctor` compara as versões locais com estas referências
+(verificadas em 2026-09-27; a fonte é `versions.json`). Divergências geram
+aviso, não impedem a instalação.
 
 | Ferramenta | Versão ref. |
 | --- | --- |
-| Python | 3.14.4 |
-| Node.js | 24.20.0 |
-| RTK | 0.46.0 |
-| Headroom | 0.38.0 |
+| Python | 3.14.7 |
+| Node.js | 24.21.0 |
+| RTK | 0.50.0 |
+| Headroom | 0.39.1 |
 | aurum | 0.4.0 |
-| Claude Code | 2.1.251 |
-| Codex CLI | 0.151.0 |
-| OpenSpec | 1.11.0 |
-| Semgrep | 1.175.0 |
+| Claude Code | 2.1.283 |
+| Codex CLI | 0.157.1 |
+| OpenSpec | 1.13.2 |
+| Semgrep | 1.178.0 |
 | Gitleaks | 8.30.1 |
 | Trivy | 0.74.0 |
-| Codex Security | 0.1.6 |
+| Codex Security | 0.1.31 |
 
 O `doctor` também valida `HEADROOM_PORT`, consulta
 `http://127.0.0.1:<porta>/readyz`, detecta rotas e hooks Headroom persistentes e
 alerta sobre sandbox/aprovação inseguras no Codex sem alterar arquivos nem
-iniciar processos.
+iniciar processos. Também aponta statusLine com alias da Microsoft Store, hook
+RTK ausente, allowlist ampla (`Bash(rtk:*)`) e inspeção HTTPS, com a ação
+corretiva de cada um.
 
 ## O que fica no repositório e o que não fica
 
 Vai para o Git: instruções, skills, subagentes, hooks e um conjunto **portátil**
-de permissões (`git`, `gh`, `npm`, `python3`, `rtk`, `aurum`, leitura de
-arquivos…).
+de permissões (`git`, `gh`, `npm`, `python3`, subcomandos de leitura do `rtk` e
+do `headroom`, `aurum`, leitura de arquivos…).
 
 Nunca vai para o Git: tokens, credenciais, histórico de sessão, memória, e
 permissões amarradas a uma máquina ou projeto (caminhos absolutos, `localhost:<porta>`,

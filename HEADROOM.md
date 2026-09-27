@@ -19,11 +19,35 @@ headroom update
 ```
 
 Se o updater informar que `uv` não está no `PATH`, use o módulo já instalado:
-`python -m uv tool upgrade headroom-ai`.
+`python -m uv tool upgrade headroom-ai`. Se falhar com `UnknownIssuer`, acrescente
+`--native-tls` (veja a seção seguinte).
 
 A versão de referência fica em `versions.json`. Atualizar é recomendado, mas
 não substitui as proteções abaixo: falhas do executor Kompress/ONNX também foram
 observadas em versões posteriores à 0.34.
+
+## Pré-requisito: TLS verificável pelo Python
+
+O proxy é uma aplicação Python. Na partida, o `litellm` baixa o encoding do
+`tiktoken` com `requests`, e as chamadas ao provedor usam `httpx`. Ambos
+validam o certificado contra o bundle Mozilla/`certifi`. Se um antivírus
+(AVG/Avast Web Shield, Kaspersky…) ou um proxy corporativo reassina o HTTPS, o
+processo termina antes do `/readyz` com `CERTIFICATE_VERIFY_FAILED`. Nesse
+caso, `headroom wrap` parece travar e o `doctor` mostra a porta fechada.
+
+`./install.sh --doctor` detecta a inspeção e mostra o emissor. A correção,
+por sessão e sem desativar a verificação:
+
+```powershell
+.\install.ps1 --ca-bundle
+$env:SSL_CERT_FILE = "$HOME\.config\ai-config\ca-bundle.pem"
+$env:REQUESTS_CA_BUNDLE = $env:SSL_CERT_FILE
+```
+
+As duas variáveis são necessárias (`requests` ignora `SSL_CERT_FILE`). Com
+elas, o proxy fica pronto em cerca de 30 s e repassa ao provedor normalmente.
+A alternativa definitiva é excluir os domínios dos provedores da inspeção
+HTTPS do antivírus; veja [TOOLS.md > TLS interceptado](TOOLS.md#tls-interceptado).
 
 ## Claude: sessão opt-in
 
@@ -67,11 +91,16 @@ HEADROOM_COMPRESSION_MAX_WORKERS=4 \
 headroom proxy --host 127.0.0.1 --port "${HEADROOM_PORT:-48731}" --mode cache --no-telemetry
 ```
 
-Depois, em outro terminal:
+Aguarde `curl http://127.0.0.1:${HEADROOM_PORT:-48731}/readyz` responder 200
+(a primeira partida leva ~30 s). Depois, em outro terminal:
 
 ```bash
 codex --profile headroom
 ```
+
+O Codex **não** acusa erro para perfil inexistente: `--profile headroom` só
+tem efeito se `~/.codex/headroom.config.toml` existir. Para confirmar, rode
+`codex --profile headroom mcp list`; o servidor `headroom` deve aparecer.
 
 No PowerShell, defina as três variáveis `HEADROOM_*` como no exemplo do Claude,
 execute `headroom proxy --host 127.0.0.1 --port $headroomPort --mode cache

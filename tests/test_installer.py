@@ -23,6 +23,11 @@ AICONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AICONFIG)
 
 
+def setUpModule() -> None:
+    # O doctor abre um handshake TLS real; a suíte roda offline e determinística.
+    os.environ["AICONFIG_DOCTOR_OFFLINE"] = "1"
+
+
 def write_executable(path: Path, body: str) -> None:
     path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -35,6 +40,7 @@ def validation_fixture(parent: str | Path) -> Path:
         "README.md",
         "CONFIGURATION_MAP.md",
         "HEADROOM.md",
+        "TOOLS.md",
         "install.sh",
         "install.ps1",
         "shared/WORKFLOW.md",
@@ -80,11 +86,12 @@ class DoctorTests(unittest.TestCase):
         ):
             self.assertEqual(AICONFIG.cmd_doctor(None), 0)
 
+        refs = json.loads((ROOT / "versions.json").read_text(encoding="utf-8"))["tools"]
         text = output.getvalue()
         self.assertIn("python", text)
-        self.assertIn("referência do repo: 3.14.4", text)
+        self.assertIn(f"referência do repo: {refs['python']}", text)
         self.assertIn("codex-security", text)
-        self.assertIn("referência do repo: 0.1.6", text)
+        self.assertIn(f"referência do repo: {refs['codex_security']}", text)
 
     def test_node_package_version_reads_metadata_without_network(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -328,8 +335,11 @@ class ToolInstallationTests(unittest.TestCase):
                 ],
             )
 
+        with mock.patch.object(AICONFIG, "pip_needs_truststore_flag", return_value=False):
+            semgrep_install = AICONFIG.tool_install_command("semgrep")
+            semgrep_upgrade = AICONFIG.tool_install_command("semgrep", upgrade=True)
         self.assertEqual(
-            AICONFIG.tool_install_command("semgrep"),
+            semgrep_install,
             [
                 AICONFIG.sys.executable,
                 "-m",
@@ -345,7 +355,7 @@ class ToolInstallationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            AICONFIG.tool_install_command("semgrep", upgrade=True),
+            semgrep_upgrade,
             [
                 AICONFIG.sys.executable,
                 "-m",
@@ -373,6 +383,8 @@ class ToolInstallationTests(unittest.TestCase):
                     "--id",
                     "Gitleaks.Gitleaks",
                     "--exact",
+                    "--source",
+                    "winget",
                     "--version",
                     versions["gitleaks"],
                     "--accept-package-agreements",
@@ -768,6 +780,177 @@ class ToolInstallationTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")
+class ToolInteropTests(unittest.TestCase):
+    def _claude_home(self, temp: str, settings: dict) -> Path:
+        home = Path(temp) / "claude"
+        home.mkdir()
+        (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        return home
+
+    def test_store_alias_is_detected_with_either_separator(self) -> None:
+        self.assertTrue(AICONFIG.is_store_alias(r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python3.EXE"))
+        self.assertTrue(AICONFIG.is_store_alias("C:/Users/u/AppData/Local/Microsoft/WindowsApps/python3.EXE"))
+        self.assertFalse(AICONFIG.is_store_alias(r"C:\Python311\python.exe"))
+
+    def test_python_placeholder_skips_store_alias(self) -> None:
+        alias = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python3.exe"
+        with (
+            mock.patch.object(AICONFIG.sys, "executable", alias),
+            mock.patch.object(
+                AICONFIG,
+                "which",
+                side_effect=lambda name: alias if name == "python3" else r"C:\Python311\python.exe",
+            ),
+        ):
+            self.assertEqual(AICONFIG.resolve_python(), r"C:\Python311\python.exe")
+
+    def test_python_placeholder_prefers_running_interpreter(self) -> None:
+        with mock.patch.object(AICONFIG, "which", return_value="/other/python3"):
+            self.assertEqual(AICONFIG.resolve_python(), AICONFIG.sys.executable)
+
+    def test_version_probe_disables_semgrep_network_check(self) -> None:
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = ("1.178.0\n", "")
+        with mock.patch.object(AICONFIG.subprocess, "Popen", return_value=process) as popen:
+            self.assertEqual(AICONFIG.tool_version("semgrep", 20.0), "1.178.0")
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["SEMGREP_ENABLE_VERSION_CHECK"], "0")
+
+    def test_slow_python_tools_get_longer_probe_budget(self) -> None:
+        self.assertGreater(AICONFIG.VERSION_PROBE_TIMEOUTS["semgrep"], AICONFIG.VERSION_PROBE_TIMEOUT_SEC)
+        self.assertGreater(AICONFIG.VERSION_PROBE_TIMEOUTS["headroom"], AICONFIG.VERSION_PROBE_TIMEOUT_SEC)
+
+    def test_pip_truststore_flag_only_where_it_is_opt_in(self) -> None:
+        for installed, expected in (("21.3", False), ("22.2", True), ("24.0", True), ("24.2", False), ("25.1", False)):
+            with mock.patch("importlib.metadata.version", return_value=installed):
+                self.assertEqual(AICONFIG.pip_needs_truststore_flag(), expected, installed)
+
+    def test_semgrep_command_adds_truststore_when_needed(self) -> None:
+        with mock.patch.object(AICONFIG, "pip_needs_truststore_flag", return_value=True):
+            command = AICONFIG.tool_install_command("semgrep")
+        self.assertIn("--use-feature=truststore", command)
+
+    def test_local_findings_flag_store_alias_missing_hook_and_broad_rules(self) -> None:
+        settings = {
+            "statusLine": {
+                "type": "command",
+                "command": '"C:/Users/u/AppData/Local/Microsoft/WindowsApps/python3.EXE" "x/statusline.py"',
+            },
+            "hooks": {"PreToolUse": []},
+            "permissions": {"allow": ["Bash(rtk:*)", "Bash(git status:*)", "Bash(headroom:*)"]},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            findings = AICONFIG.claude_local_findings(self._claude_home(temp, settings))
+
+        text = "\n".join(findings)
+        self.assertIn("WindowsApps", text)
+        self.assertIn("hook RTK ausente", text)
+        self.assertIn("Bash(rtk:*)", text)
+        self.assertIn("Bash(headroom:*)", text)
+        self.assertNotIn("Bash(git status:*)", text)
+
+    def test_repo_settings_have_no_local_findings(self) -> None:
+        settings = json.loads((ROOT / "claude/settings.json").read_text(encoding="utf-8"))
+        settings["statusLine"]["command"] = f'"{AICONFIG.sys.executable}" "statusline.py"'
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(AICONFIG.claude_local_findings(self._claude_home(temp, settings)), [])
+
+    def test_repo_permissions_are_not_broad(self) -> None:
+        allow = json.loads((ROOT / "claude/settings.json").read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertFalse(set(allow) & set(AICONFIG.BROAD_TOOL_PERMISSIONS))
+        self.assertIn("Bash(rtk gain:*)", allow)
+
+    def test_tls_probe_is_skipped_offline(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"AICONFIG_DOCTOR_OFFLINE": "1"}),
+            mock.patch.object(AICONFIG, "_tls_handshake") as handshake,
+        ):
+            self.assertEqual(AICONFIG.tls_inspection_status(), ("ignorado", None))
+        handshake.assert_not_called()
+
+    def test_tls_probe_reports_intercepting_issuer(self) -> None:
+        intercepted = {"issuer": ((("commonName", "AVG Web/Mail Shield Root"),),)}
+        with (
+            mock.patch.dict(os.environ, {"AICONFIG_DOCTOR_OFFLINE": ""}),
+            mock.patch.object(AICONFIG, "mozilla_ca_file", return_value="certifi.pem"),
+            mock.patch.object(AICONFIG.ssl, "create_default_context"),
+            mock.patch.object(
+                AICONFIG,
+                "_tls_handshake",
+                side_effect=[AICONFIG.ssl.SSLCertVerificationError("unknown issuer"), intercepted],
+            ),
+        ):
+            status = AICONFIG.tls_inspection_status()
+        self.assertEqual(status, ("inspecionado", "AVG Web/Mail Shield Root"))
+
+    def test_tls_probe_without_network_is_not_an_error(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"AICONFIG_DOCTOR_OFFLINE": ""}),
+            mock.patch.object(AICONFIG, "mozilla_ca_file", return_value="certifi.pem"),
+            mock.patch.object(AICONFIG.ssl, "create_default_context"),
+            mock.patch.object(AICONFIG, "_tls_handshake", side_effect=OSError("offline")),
+        ):
+            self.assertEqual(AICONFIG.tls_inspection_status(), ("ignorado", None))
+
+    def test_ca_bundle_combines_certifi_and_system_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            certifi = Path(temp) / "certifi.pem"
+            certifi.write_text("MOZILLA\n", encoding="ascii")
+            with (
+                mock.patch.object(AICONFIG, "mozilla_ca_file", return_value=str(certifi)),
+                mock.patch.object(AICONFIG, "windows_trusted_roots", return_value=["LOCAL-ROOT\n"]),
+            ):
+                content, count = AICONFIG.build_ca_bundle()
+        self.assertEqual(count, 1)
+        self.assertTrue(content.startswith("MOZILLA\n"))
+        self.assertIn("LOCAL-ROOT", content)
+
+    def test_windows_roots_keep_only_server_auth_certificates(self) -> None:
+        entries = [
+            (b"a", "x509_asn", True),
+            (b"b", "x509_asn", {AICONFIG.SERVER_AUTH_OID}),
+            (b"c", "x509_asn", {"1.3.6.1.5.5.7.3.3"}),
+            (b"a", "x509_asn", True),
+            (b"d", "pkcs_7_asn", True),
+        ]
+        with (
+            mock.patch.object(AICONFIG.ssl, "enum_certificates", create=True, side_effect=[entries, []]),
+            mock.patch.object(AICONFIG.ssl, "DER_cert_to_PEM_cert", side_effect=lambda der: der.decode()),
+        ):
+            self.assertEqual(AICONFIG.windows_trusted_roots(), ["a", "b"])
+
+    @unittest.skipUnless(os.name == "nt", "o bundle só é gerado no Windows")
+    def test_ca_bundle_command_writes_only_the_requested_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            dest = Path(temp) / "sub" / "bundle.pem"
+            with (
+                mock.patch.object(AICONFIG, "build_ca_bundle", return_value=("PEM\n", 3)),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                code = AICONFIG.cmd_ca_bundle(SimpleNamespace(output=str(dest), dry_run=False))
+            self.assertEqual(code, 0)
+            self.assertEqual(dest.read_text(encoding="ascii"), "PEM\n")
+
+            dry = Path(temp) / "dry.pem"
+            with (
+                mock.patch.object(AICONFIG, "build_ca_bundle", return_value=("PEM\n", 3)),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                AICONFIG.cmd_ca_bundle(SimpleNamespace(output=str(dry), dry_run=True))
+            self.assertFalse(dry.exists())
+
+    def test_wrappers_expose_ca_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            wrapper = root / "install.ps1"
+            wrapper.write_text(
+                wrapper.read_text(encoding="utf-8").replace("--ca-bundle", "--ca"), encoding="utf-8"
+            )
+            report = AICONFIG.validate_repository(root)
+        codes = [item["code"] for item in report.as_dict()["errors"]]
+        self.assertIn("wrapper-command-missing", codes)
+
+
 class PowerShellInstallerTests(unittest.TestCase):
     def test_invalid_dry_run_preserves_error_and_skips_tools(self) -> None:
         powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
