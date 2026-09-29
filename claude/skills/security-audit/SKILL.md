@@ -9,8 +9,8 @@ argument-hint: "[scan|secrets|deps|full|ci] [target]"
 # Auditoria de segurança (Semgrep + Gitleaks + Trivy)
 
 Tríade de ferramentas **100% locais, gratuitas e sem API key** para auditar a
-segurança do código-fonte. Alternativa direta ao Codex Security para Claude
-Code e Gemini.
+segurança do código-fonte. Funciona igual em Claude Code, Codex e
+Gemini/Antigravity; no Codex, complementa o Codex Security.
 
 ## Pré-requisitos
 

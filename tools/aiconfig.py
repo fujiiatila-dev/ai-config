@@ -84,8 +84,22 @@ MANAGED_TOOL_VERSION_KEYS = {
 }
 
 VALIDATION_SCHEMA_VERSION = 1
+ADAPTER_INSTRUCTION_FILES = (
+    "adapters/codex/AGENTS.md",
+    "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
+)
 VALIDATION_PLACEHOLDERS = frozenset(
-    {"PYTHON", "NODE", "CLAUDE_HOME", "CODEX_HOME", "HEADROOM", "HEADROOM_PORT"}
+    {
+        "PYTHON",
+        "NODE",
+        "CLAUDE_HOME",
+        "CODEX_HOME",
+        "HEADROOM",
+        "HEADROOM_PORT",
+        "AGENTS_HOME",
+        "AGENTS_HOME_WIN",
+    }
 )
 VALIDATION_REQUIRED_SOURCES = (
     "claude/settings.json",
@@ -98,7 +112,11 @@ VALIDATION_REQUIRED_SOURCES = (
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
     "adapters/codex/headroom.config.toml.example",
+    "adapters/codex/hooks.json",
+    "adapters/codex/windows.config.toml.example",
+    "adapters/codex/hooks.impeccable.json",
     "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
     "adapters/rtk/filters.toml",
     "tools/recover_codex_sessions.py",
     "versions.json",
@@ -114,7 +132,11 @@ VALIDATION_PORTABLE_FILES = (
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
     "adapters/codex/headroom.config.toml.example",
+    "adapters/codex/hooks.json",
+    "adapters/codex/windows.config.toml.example",
+    "adapters/codex/hooks.impeccable.json",
     "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
     "adapters/rtk/filters.toml",
     "versions.json",
 )
@@ -369,7 +391,49 @@ def _subst(node, table: dict[str, str]):
     return node
 
 
-def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
+# Hooks instalados por versões antigas (ou por outros instaladores) que estão
+# comprovadamente quebrados no destino. Cada um vira conflito explícito: o
+# instalador pergunta, e só remove com a escolha "repo" (ou --prefer-repo).
+def _codex_legacy_hook(hook: dict) -> str | None:
+    command = str(hook.get("command", "")).strip()
+    windows = str(hook.get("commandWindows", "")).strip()
+    if command == "rtk hook claude":
+        return "usa o processador do Claude; o do Codex é `rtk hook codex`"
+    if windows.lower().startswith("if exist"):
+        return "commandWindows em sintaxe cmd; o Codex executa hooks no PowerShell (ParserError)"
+    return None
+
+
+def drop_legacy_hooks(data: dict, ctx: Ctx, where: str, detector) -> dict:
+    """Remove, mediante escolha, hooks que `detector` reconhece como legados."""
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return data
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        kept_entries = []
+        for entry in entries:
+            kept = []
+            for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+                reason = detector(hook) if isinstance(hook, dict) else None
+                if reason and ctx.choose(
+                    f"{where} :: {event} :: hook legado ({reason})",
+                    "manter o hook atual",
+                    "substituir pelo hook do repo",
+                ) == "repo":
+                    add(f"{where} :: {event} (hook legado substituído)")
+                    continue
+                kept.append(hook)
+            if not isinstance(entry, dict) or kept:
+                if isinstance(entry, dict):
+                    entry = {**entry, "hooks": kept}
+                kept_entries.append(entry)
+        hooks[event] = kept_entries
+    return data
+
+
+def install_json(src: Path, dest: Path, ctx: Ctx, subst=None, legacy=None) -> None:
     repo = json.loads(src.read_text(encoding="utf-8"))
     if subst:
         repo = _subst(repo, subst)
@@ -387,7 +451,10 @@ def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
 
     # Merge sobre uma cópia: `local` continua sendo a linha de base intacta da
     # comparação abaixo.
-    merged = merge_json(copy.deepcopy(local), repo, ctx)
+    base = copy.deepcopy(local)
+    if legacy:
+        base = drop_legacy_hooks(base, ctx, str(dest), legacy)
+    merged = merge_json(base, repo, ctx)
     if _key(merged) == _key(local):
         keep(f"{dest} (já em dia)")
         return
@@ -396,12 +463,28 @@ def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
 
 
 # ── merge de markdown via bloco gerenciado ───────────────────────────────────
-def install_markdown(src: Path, dest: Path, ctx: Ctx) -> None:
-    body = src.read_text(encoding="utf-8").strip()
+INCLUDE_RE = re.compile(r"^<!-- ai-config:include (?P<path>[\w./-]+) -->$", re.M)
+
+
+def expand_includes(body: str, root: Path = ROOT) -> str:
+    """Troca `<!-- ai-config:include caminho -->` pelo arquivo do repo.
+
+    Codex e Antigravity não expandem `@arquivo`; o conteúdo precisa estar no
+    próprio arquivo de instruções. A fonte continua única no repositório.
+    """
+    return INCLUDE_RE.sub(
+        lambda m: (root / m.group("path")).read_text(encoding="utf-8").strip(), body
+    )
+
+
+def install_markdown(src: Path, dest: Path, ctx: Ctx, preamble: str = "") -> None:
+    body = expand_includes(src.read_text(encoding="utf-8").strip())
     block = f"{BEGIN}\n{body}\n{END}\n"
 
     if not dest.exists() or not dest.read_text(encoding="utf-8").strip():
-        ctx.write(dest, block)
+        # O preâmbulo (ex.: frontmatter de regra do Antigravity) precisa ser a
+        # primeira coisa do arquivo, fora do bloco gerenciado.
+        ctx.write(dest, preamble + block)
         add(f"{dest} (criado)")
         return
 
@@ -643,6 +726,36 @@ def is_store_alias(path: str) -> bool:
     return "windowsapps" in parts
 
 
+ANTIGRAVITY_RULE_FRONTMATTER = (
+    "---\n"
+    "trigger: always_on\n"
+    "description: Padrão de trabalho do ai-config (OpenSpec, qualidade, segurança, RTK, Headroom)\n"
+    "---\n\n"
+)
+
+
+def agents_home_dir() -> Path:
+    """Raiz ~/.agents, onde o Codex procura skills de usuário."""
+    override = os.environ.get("AGENTS_HOME", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".agents"
+
+
+def windows_short_path(path: Path) -> str:
+    """Caminho com barra invertida e sem espaços (nome 8.3) para comandos sem aspas."""
+    text = str(path).replace("/", "\\")
+    if os.name != "nt" or " " not in text:
+        return text
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(1024)
+        if ctypes.windll.kernel32.GetShortPathNameW(text, buffer, 1024):
+            return buffer.value
+    except (OSError, AttributeError):
+        pass
+    return text
+
+
 def resolve_python() -> str:
     """Interpretador para {{PYTHON}}: o que roda o instalador, nunca um alias."""
     if sys.executable and not is_store_alias(sys.executable):
@@ -729,6 +842,30 @@ def tool_version(exe: str, timeout: float | None = None) -> str | None:
             break
         except Exception:
             continue
+    return None
+
+
+def python_dist_version(exe: str, dist: str) -> str | None:
+    """Versão de um pacote Python lida dos metadados do interpretador dono do exe.
+
+    `semgrep --version` importa o pacote inteiro (10–15 s com antivírus); os
+    metadados respondem em milissegundos sem executar o CLI.
+    """
+    scripts = Path(exe).resolve().parent
+    for interpreter in (scripts.parent / "python.exe", scripts / "python.exe", scripts / "python3"):
+        if not interpreter.is_file():
+            continue
+        try:
+            result = subprocess.run(
+                [str(interpreter), "-c", f"import importlib.metadata as m; print(m.version({dist!r}))"],
+                capture_output=True, text=True, timeout=VERSION_PROBE_TIMEOUT_SEC,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        version = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(r"\d+(\.\d+)+", version):
+            return version
     return None
 
 
@@ -1146,6 +1283,102 @@ def claude_local_findings(claude_home: Path | None = None) -> list[str]:
     return findings
 
 
+# Skills neutras, instaladas também para Codex e Antigravity. O Impeccable fica
+# de fora: ele distribui um build próprio por agente (caminhos e subagentes).
+SHARED_SKILLS = ("openspec", "qualidade", "security-audit")
+
+
+def _repo_skill_names() -> list[str]:
+    return list(SHARED_SKILLS)
+
+
+def install_shared_skills(dest: Path, ctx: Ctx, rotulo: str) -> None:
+    for name in SHARED_SKILLS:
+        install_tree(ROOT / "claude/skills" / name, dest / name, ctx, f"{rotulo}/{name}")
+
+
+def _skill_drift(skills_dir: Path) -> tuple[list[str], list[str]]:
+    """(ausentes, desatualizadas) comparando o SKILL.md de cada skill do repo."""
+    missing, stale = [], []
+    for name in _repo_skill_names():
+        installed = skills_dir / name / "SKILL.md"
+        if not installed.exists():
+            missing.append(name)
+        elif not filecmp.cmp(ROOT / "claude/skills" / name / "SKILL.md", installed, shallow=False):
+            stale.append(name)
+    return missing, stale
+
+
+def codex_local_findings(
+    codex_home: Path | None = None, agents_home: Path | None = None, windows: bool | None = None
+) -> list[str]:
+    """Problemas do perfil Codex que abrem janelas ou escondem as ferramentas do repo."""
+    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    agents_home = agents_home or agents_home_dir()
+    windows = os.name == "nt" if windows is None else windows
+    if not codex_home.exists():
+        return []
+    findings: list[str] = []
+
+    config = codex_home / "config.toml"
+    if windows and config.exists():
+        features = _toml_keys(_toml_sections(config.read_text(encoding="utf-8")).get("[features]", []))
+        if features.get("daemon_auto_start", "true").strip().lower() != "false":
+            findings.append(
+                "features.daemon_auto_start ativo: o daemon abre uma janela por hook/git "
+                "(openai/codex#44768); rode o instalador e depois `codex app-server daemon stop`"
+            )
+
+    hooks_path = codex_home / "hooks.json"
+    if hooks_path.exists():
+        try:
+            hooks = json.loads(hooks_path.read_text(encoding="utf-8")).get("hooks", {})
+        except (OSError, json.JSONDecodeError):
+            findings.append("hooks.json não pôde ser lido")
+            hooks = {}
+        commands = [
+            hook
+            for entries in hooks.values() if isinstance(entries, list)
+            for entry in entries if isinstance(entry, dict)
+            for hook in entry.get("hooks", []) if isinstance(hook, dict)
+        ]
+        for hook in commands:
+            reason = _codex_legacy_hook(hook)
+            if reason:
+                findings.append(f"hook legado em hooks.json: {reason}")
+        if not any(str(h.get("command", "")).strip() == "rtk hook codex" for h in commands):
+            findings.append("hook `rtk hook codex` ausente: a saída do shell não é condensada")
+
+    agents_md = codex_home / "AGENTS.md"
+    if agents_md.exists() and re.search(r"^@WORKFLOW\.md\s*$", agents_md.read_text(encoding="utf-8"), re.M):
+        findings.append(
+            "AGENTS.md usa `@WORKFLOW.md`, que o Codex não expande: o padrão de trabalho não chega ao modelo"
+        )
+
+    missing, stale = _skill_drift(agents_home / "skills")
+    if missing:
+        findings.append(f"skills ausentes em {agents_home / 'skills'}: {', '.join(missing)}")
+    if stale:
+        findings.append(f"skills desatualizadas em {agents_home / 'skills'}: {', '.join(stale)}")
+    return findings
+
+
+def antigravity_local_findings(gemini_home: Path | None = None) -> list[str]:
+    """Regra global e skills que o Antigravity lê de ~/.gemini/config."""
+    gemini_home = gemini_home or Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
+    if not gemini_home.exists():
+        return []
+    findings: list[str] = []
+    if not (gemini_home / "config" / "rules" / "ai-config.md").exists():
+        findings.append("regra global ausente em config/rules/ai-config.md: o Antigravity não recebe o WORKFLOW")
+    missing, stale = _skill_drift(gemini_home / "config" / "skills")
+    if missing:
+        findings.append(f"skills ausentes em config/skills: {', '.join(missing)}")
+    if stale:
+        findings.append(f"skills desatualizadas em config/skills: {', '.join(stale)}")
+    return findings
+
+
 def rtk_identity_ok(exe: str) -> bool:
     """O `rtk` do PATH é o Rust Token Killer (tem `gain`), não o Rust Type Kit."""
     try:
@@ -1224,6 +1457,21 @@ def headroom_persistence_findings(
                 findings.append(
                     "Claude: settings.json contém hook que inicia ou recupera Headroom automaticamente"
                 )
+
+    # `headroom wrap claude` registra o MCP `headroom` no ~/.claude.json e o
+    # remove ao sair; se a sessão morrer, o registro fica e toda sessão comum
+    # passa a iniciar `headroom mcp serve` apontando para um proxy parado.
+    claude_state = Path(os.environ.get("CLAUDE_STATE_FILE", Path.home() / ".claude.json"))
+    if claude_state.exists():
+        try:
+            servers = json.loads(claude_state.read_text(encoding="utf-8")).get("mcpServers", {})
+        except (OSError, json.JSONDecodeError, AttributeError):
+            servers = {}
+        if isinstance(servers, dict) and "headroom" in servers:
+            findings.append(
+                "Claude: MCP `headroom` persistido em ~/.claude.json (sobra de um wrap "
+                "interrompido); remova com `claude mcp remove headroom --scope user`"
+            )
 
     codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     codex_config = codex_home / "config.toml"
@@ -1634,19 +1882,21 @@ def _validate_structure(root: Path, report: ValidationReport) -> None:
                 "corrija o caminho relativo no mapa ou restaure o arquivo",
             )
 
-    for relative in (
-        "claude/CLAUDE.md",
-        "adapters/codex/AGENTS.md",
-        "adapters/gemini/GEMINI.md",
-    ):
+    # O Claude Code expande `@WORKFLOW.md`; Codex e Antigravity não, e recebem
+    # o mesmo arquivo incorporado pelo include na instalação.
+    references = {"claude/CLAUDE.md": "@WORKFLOW.md"}
+    references.update(
+        {relative: "<!-- ai-config:include shared/WORKFLOW.md -->" for relative in ADAPTER_INSTRUCTION_FILES}
+    )
+    for relative, marker in references.items():
         path = root / relative
         text = _validation_read(path, report, root)
-        if text is not None and "@WORKFLOW.md" not in text:
+        if text is not None and marker not in text:
             report.error(
                 "workflow-reference-missing",
                 relative,
                 "o adapter não referencia o WORKFLOW compartilhado",
-                "use @WORKFLOW.md para manter uma única fonte de regras",
+                f"use {marker} para manter uma única fonte de regras",
             )
 
 
@@ -1794,7 +2044,7 @@ def _validate_wrapper_parity(root: Path, report: ValidationReport) -> None:
         text = _validation_read(path, report, root)
         if text is None:
             continue
-        for command in ("validate", "doctor", "ca-bundle"):
+        for command in ("validate", "doctor", "ca-bundle", "headroom"):
             if f"--{command}" not in text:
                 report.error(
                     "wrapper-command-missing",
@@ -2006,6 +2256,28 @@ def _validate_workflow(root: Path, report: ValidationReport) -> None:
             "documente validate, dry-run, apply, doctor, security, quality e commit",
         )
 
+    # Codex e Antigravity não expandem `@arquivo`: o conteúdo vem por include
+    # resolvido na instalação, e todo include precisa apontar para um arquivo.
+    for relative in ADAPTER_INSTRUCTION_FILES:
+        adapter = _validation_read(root / relative, report, root)
+        if adapter is None:
+            continue
+        if re.search(r"^@\S+", adapter, re.M):
+            report.error(
+                "adapter-import-unsupported",
+                relative,
+                "o adapter usa `@arquivo`, que Codex e Antigravity não expandem",
+                "use <!-- ai-config:include caminho --> para incorporar o conteúdo",
+            )
+        for match in INCLUDE_RE.finditer(adapter):
+            if not (root / match.group("path")).is_file():
+                report.error(
+                    "adapter-include-missing",
+                    relative,
+                    f"include aponta para arquivo inexistente: {match.group('path')}",
+                    "corrija o caminho relativo à raiz do repositório",
+                )
+
 
 def _bash_for_validation() -> str | None:
     if os.name != "nt":
@@ -2094,7 +2366,9 @@ def cmd_doctor(_args) -> int:
             print(f"  {_c('33', 'ausente')}  {nome:<10} — {nota}")
             faltando.append(nome)
             continue
-        v = tool_version(exe, VERSION_PROBE_TIMEOUTS.get(nome)) if exe else package_version
+        v = (python_dist_version(exe, "semgrep") if exe and nome == "semgrep" else None) or (
+            tool_version(exe, VERSION_PROBE_TIMEOUTS.get(nome)) if exe else package_version
+        )
         v = v or "?"
         ref = esperado.get(chave)
         marca = ""
@@ -2107,11 +2381,15 @@ def cmd_doctor(_args) -> int:
                 "Rust Token Killer (colisão com Rust Type Kit?)"
             )
 
-    local_findings = claude_local_findings()
-    if local_findings:
-        print("\n  Claude Code local")
-        for finding in local_findings:
-            print(f"  {_c('33', '!')}       {finding}")
+    for title, findings_for_agent in (
+        ("Claude Code local", claude_local_findings()),
+        ("Codex local", codex_local_findings()),
+        ("Antigravity local", antigravity_local_findings()),
+    ):
+        if findings_for_agent:
+            print(f"\n  {title}")
+            for finding in findings_for_agent:
+                print(f"  {_c('33', '!')}       {finding}")
 
     tls, issuer = tls_inspection_status()
     if tls == "inspecionado":
@@ -2202,6 +2480,7 @@ def cmd_install(args) -> int:
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
     rtk_home = Path(os.environ.get("RTK_CONFIG_DIR", Path.home() / ".config" / "rtk"))
+    agents_home = agents_home_dir()
     try:
         porta = configured_headroom_port()
     except ValueError as exc:
@@ -2233,6 +2512,10 @@ def cmd_install(args) -> int:
         "CODEX_HOME": fwd(codex_home),
         "HEADROOM": fwd(headroom),
         "HEADROOM_PORT": porta,
+        "AGENTS_HOME": fwd(agents_home),
+        # Sem aspas o mesmo comando vale no cmd e no PowerShell; por isso o
+        # caminho não pode ter espaço (usa o nome curto 8.3 quando houver).
+        "AGENTS_HOME_WIN": windows_short_path(agents_home),
     }
 
     head("Claude Code")
@@ -2262,18 +2545,55 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    if os.name == "nt":
+        install_toml(
+            ROOT / "adapters/codex/windows.config.toml.example",
+            codex_home / "config.toml",
+            ctx,
+            subst,
+        )
     install_toml(
         ROOT / "adapters/codex/headroom.config.toml.example",
         codex_home / "headroom.config.toml",
         ctx,
         subst,
     )
+    install_json(
+        ROOT / "adapters/codex/hooks.json",
+        codex_home / "hooks.json",
+        ctx,
+        subst,
+        legacy=_codex_legacy_hook,
+    )
+    # Os hooks do Impeccable chamam o build dele para Codex, instalado pelo
+    # próprio Impeccable em ~/.agents; sem o launcher, o hook só falharia.
+    if (agents_home / "skills" / "impeccable" / "scripts" / "impeccable.cmd").exists() or (
+        os.name != "nt" and (agents_home / "skills" / "impeccable" / "scripts" / "impeccable").exists()
+    ):
+        install_json(
+            ROOT / "adapters/codex/hooks.impeccable.json",
+            codex_home / "hooks.json",
+            ctx,
+            subst,
+            legacy=_codex_legacy_hook,
+        )
+    # O Codex lê skills de usuário em ~/.agents/skills (não em ~/.codex).
+    install_shared_skills(agents_home / "skills", ctx, "skills (Codex)")
     if getattr(args, "harden_codex", False):
         harden_codex_config(codex_home / "config.toml", ctx)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
     install_markdown(ROOT / "shared/WORKFLOW.md", gemini_home / "WORKFLOW.md", ctx)
+    # O Antigravity não lê ~/.gemini/GEMINI.md: a raiz global dele é
+    # ~/.gemini/config (rules/ e skills/).
+    install_markdown(
+        ROOT / "adapters/gemini/antigravity-rule.md",
+        gemini_home / "config" / "rules" / "ai-config.md",
+        ctx,
+        preamble=ANTIGRAVITY_RULE_FRONTMATTER,
+    )
+    install_shared_skills(gemini_home / "config" / "skills", ctx, "skills (Antigravity)")
 
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
@@ -2332,6 +2652,61 @@ def cmd_ca_bundle(args) -> int:
     return 0
 
 
+def headroom_session_env(base: dict | None = None) -> tuple[dict, list[str]]:
+    """Ambiente de uma sessão Headroom: Kompress desligado e, se existir, o bundle de CA.
+
+    Nada é persistido: as variáveis valem só para o processo lançado.
+    """
+    env = dict(os.environ if base is None else base)
+    notes: list[str] = []
+    env.setdefault("HEADROOM_DISABLE_KOMPRESS", "1")
+    env.setdefault("HEADROOM_DISABLE_KOMPRESS_FALLBACK", "1")
+    bundle = default_ca_bundle_path()
+    if bundle.is_file() and not env.get("SSL_CERT_FILE"):
+        env["SSL_CERT_FILE"] = str(bundle)
+        env.setdefault("REQUESTS_CA_BUNDLE", str(bundle))
+        notes.append(f"bundle de CA: {bundle}")
+    return env, notes
+
+
+def headroom_command(target: str, port: str, headroom: str, extra: list[str]) -> list[str]:
+    if target == "claude":
+        return [headroom, "wrap", "claude", "--port", port, "--tool-search", "true", *extra]
+    return [
+        headroom, "proxy", "--host", "127.0.0.1", "--port", port,
+        "--mode", "cache", "--no-telemetry", *extra,
+    ]
+
+
+def cmd_headroom(args) -> int:
+    """Inicia Headroom por sessão (Claude via wrap, ou o proxy para `codex --profile headroom`)."""
+    headroom = which("headroom", "headroom.exe")
+    if not headroom:
+        warn("headroom não encontrado no PATH; veja TOOLS.md > Headroom")
+        return 1
+    try:
+        port = configured_headroom_port()
+    except ValueError as exc:
+        warn(str(exc))
+        return 2
+    env, notes = headroom_session_env()
+    if os.name == "nt" and not any(n.startswith("bundle") for n in notes):
+        if tls_inspection_status()[0] == "inspecionado":
+            warn("HTTPS interceptado e sem bundle: rode  --ca-bundle  antes, ou o proxy não sobe")
+    command = headroom_command(args.target, port, headroom, list(args.extra or []))
+    for note in notes:
+        keep(note)
+    keep("executando: " + " ".join(command[1:]))
+    if args.target == "proxy":
+        print(f"  quando /readyz responder, rode em outro terminal:  codex --profile headroom")
+    if args.dry_run:
+        return 0
+    try:
+        return subprocess.call(command, env=env)
+    except KeyboardInterrupt:
+        return 130
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="aiconfig", description=__doc__)
     sub = p.add_subparsers(dest="cmd")
@@ -2374,7 +2749,24 @@ def main() -> int:
     b.add_argument("--output", help="destino (padrão: ~/.config/ai-config/ca-bundle.pem)")
     b.set_defaults(func=cmd_ca_bundle)
 
-    args = p.parse_args()
+    h = sub.add_parser(
+        "headroom",
+        help="inicia Headroom por sessão: `claude` (wrap) ou `proxy` (para codex --profile headroom)",
+    )
+    h.add_argument("target", choices=("claude", "proxy"))
+    h.add_argument("--dry-run", action="store_true", help="mostra o comando sem executar")
+    # `*` e não REMAINDER: REMAINDER engoliria o próprio --dry-run e iniciaria
+    # a sessão de verdade. Argumentos para o headroom vão depois de `--`.
+    h.add_argument("extra", nargs="*", help="argumentos para o headroom, após `--`")
+    h.set_defaults(func=cmd_headroom)
+
+    args, unknown = p.parse_known_args()
+    if unknown:
+        # Só o lançador do Headroom repassa opções próprias ao executável (o
+        # PowerShell consome o `--` antes de chegar aqui).
+        if args.cmd != "headroom":
+            p.error(f"argumentos não reconhecidos: {' '.join(unknown)}")
+        args.extra = [*args.extra, *unknown]
     if not args.cmd:
         p.print_help()
         return 1

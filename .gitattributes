@@ -1,5 +1,14 @@
-# Scripts executados por sh/bash precisam de LF mesmo com core.autocrlf=true.
-*.sh                                   text eol=lf
-claude/skills/impeccable/scripts/impeccable text eol=lf
+# Tudo que o instalador copia precisa ter os mesmos bytes em qualquer sistema:
+# com core.autocrlf=true, o checkout no Windows trocaria LF por CRLF e cada
+# instalação acusaria dezenas de arquivos "diferentes" sem mudança real.
+*                                      text=auto eol=lf
+
+# Scripts do Windows mantêm CRLF.
 *.cmd                                  text eol=crlf
 *.ps1                                  text eol=crlf
+
+# Binários.
+*.png                                  binary
+*.jpg                                  binary
+*.ico                                  binary
+*.exe                                  binary

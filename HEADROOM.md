@@ -49,6 +49,15 @@ elas, o proxy fica pronto em cerca de 30 s e repassa ao provedor normalmente.
 A alternativa definitiva é excluir os domínios dos provedores da inspeção
 HTTPS do antivírus; veja [TOOLS.md > TLS interceptado](TOOLS.md#tls-interceptado).
 
+## Lançador do repositório
+
+`./install.sh --headroom claude` (ou `.\install.ps1 --headroom claude`) aplica
+as variáveis `HEADROOM_DISABLE_KOMPRESS*` e, se existir, o bundle de CA, só no
+processo iniciado, e roda `headroom wrap claude --port <porta> --tool-search true`.
+`--headroom proxy` sobe o proxy para `codex --profile headroom`. Use
+`--dry-run` para ver o comando sem executar. As seções abaixo mostram o
+equivalente manual.
+
 ## Claude: sessão opt-in
 
 Use o wrapper, que limita `ANTHROPIC_BASE_URL` ao processo iniciado:

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-29
+goal: Eliminar as janelas de terminal do Codex no Windows e fazer as
+  ferramentas do repositório chegarem de fato ao Codex e ao Antigravity.
