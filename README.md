@@ -81,6 +81,7 @@ o miolo do bloco é atualizado.
 ./install.sh --doctor           # verifica runtimes, agentes e ferramentas
 ./install.sh --ca-bundle        # bundle de CA para Headroom/uv/pip atrás de inspeção TLS
 ./install.sh --headroom claude  # sessão Headroom para o Claude (ou `proxy` para o Codex)
+./install.sh --headroom-auto    # `claude`/`codex` passam pelo Headroom sozinhos, com fallback direto
 ```
 
 No Windows, use as mesmas opções com `.\install.ps1`. `--update-tools` é
@@ -123,7 +124,9 @@ o valor atual é sempre mantido.
 Destinos, se você quiser mudá-los: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `GEMINI_HOME`, `RTK_CONFIG_DIR`, `HEADROOM_PORT`.
 
-Headroom é opt-in e nunca é iniciado nem injetado globalmente pelo instalador.
+Headroom é opt-in e nunca é injetado globalmente pelo instalador. Com
+`--headroom-auto`, funções de shell abrem `claude` e `codex` pelo proxy e caem
+para a conexão direta se ele não responder.
 Veja [`HEADROOM.md`](HEADROOM.md) para sessões isoladas, mitigação do
 Kompress/ONNX, perfil Codex sem WebSocket e recuperação de instalações legadas.
 

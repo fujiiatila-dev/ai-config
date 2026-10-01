@@ -26,7 +26,7 @@ extras em [HEADROOM.md](HEADROOM.md).
 | RTK | hook `rtk hook claude` | hook `rtk hook codex` (`~/.codex/hooks.json`) | prefixo `rtk` manual (sem hook) |
 | Skills `openspec`, `qualidade`, `security-audit` | `~/.claude/skills` | `~/.agents/skills` | `~/.gemini/config/skills` |
 | Impeccable | `~/.claude/skills/impeccable` + hook | build próprio do Impeccable em `~/.agents` + hooks | instalador do Impeccable |
-| Headroom | `--headroom claude` | `--headroom proxy` + `codex --profile headroom` | — |
+| Headroom | `--headroom-auto` (automático) ou `--headroom claude` | `--headroom-auto` ou `--headroom proxy` + `codex --profile headroom` | — |
 
 Codex e Antigravity **não expandem `@arquivo`**. Por isso o instalador
 incorpora o `WORKFLOW.md` no próprio arquivo de instruções a partir da fonte
@@ -161,9 +161,18 @@ comprime o contexto enviado ao modelo. Ele fica **no caminho de rede** entre o
 agente e o provedor, por isso o ai-config nunca o ativa globalmente: uma sessão
 normal de `claude` ou `codex` funciona com o proxy desligado.
 
+### Modo automático
+
+`.\install.ps1 --headroom-auto` faz `claude` e `codex` no terminal passarem
+pelo Headroom sozinhos. Se o proxy não estiver saudável, o agente abre direto
+no provedor, com um aviso de uma linha. Nada é persistido: sem
+`ANTHROPIC_BASE_URL` global e sem MCP gravado. Um terminal interativo novo
+pré-aquece o proxy em segundo plano. Detalhes e como desligar em
+[HEADROOM.md](HEADROOM.md#modo-automático-opt-in-com-fallback-direto).
+
 ### Uso: Claude Code
 
-O jeito mais simples é o lançador do repositório. Ele desliga o Kompress,
+Para uma sessão avulsa, use o lançador do repositório. Ele desliga o Kompress,
 aplica o bundle de CA quando existe (só no processo iniciado) e chama
 `headroom wrap claude` com a porta configurada:
 

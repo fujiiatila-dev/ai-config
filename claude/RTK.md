@@ -43,6 +43,10 @@ hooks de inicialização, e não persista `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`
 Se o proxy degradar, encerre a sessão e reinicie `claude` diretamente. Para o
 Codex, use apenas `codex --profile headroom`.
 
+Com o modo automático do ai-config (`install --headroom-auto`), `claude` e
+`codex` no terminal já passam pelo Headroom e caem para a conexão direta se o
+proxy não responder. `AICONFIG_HEADROOM=off` desliga para a sessão do shell.
+
 Se o proxy não sobe ou `uv`/`pip` falham com `CERTIFICATE_VERIFY_FAILED`, há
 inspeção HTTPS (antivírus/proxy). Rode o `doctor` do ai-config e exporte
 `SSL_CERT_FILE` **e** `REQUESTS_CA_BUNDLE` para o bundle gerado por

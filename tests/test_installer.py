@@ -1204,6 +1204,131 @@ class CodexAndAntigravityTests(unittest.TestCase):
                 text = "\n".join(AICONFIG.headroom_persistence_findings())
         self.assertIn("MCP `headroom`", text)
 
+class HeadroomAutoTests(unittest.TestCase):
+    def _ctx(self, dry_run: bool = False):
+        return AICONFIG.Ctx(SimpleNamespace(dry_run=dry_run, prefer_repo=False, keep_existing=True, yes=True))
+
+    def test_healthy_claude_goes_through_wrap_without_persistent_side_effects(self) -> None:
+        command = AICONFIG.auto_agent_command("claude", "claude.exe", "headroom", "48731", True, ["-p", "oi"])
+        self.assertEqual(command[:3], ["headroom", "wrap", "claude"])
+        self.assertIn("--no-proxy", command)
+        self.assertIn("--no-mcp", command)
+        self.assertNotIn("--1m", command)
+        separator = command.index("--")
+        self.assertEqual(command[separator + 1 : separator + 3], ["-p", "oi"])
+        self.assertEqual(command[-2], "--mcp-config")
+
+    def test_unhealthy_proxy_falls_back_to_the_direct_agent(self) -> None:
+        self.assertEqual(
+            AICONFIG.auto_agent_command("claude", "claude.exe", "headroom", "48731", False, ["--resume", "x"]),
+            ["claude.exe", "--resume", "x"],
+        )
+        self.assertEqual(
+            AICONFIG.auto_agent_command("codex", "codex.cmd", "headroom", "48731", False, []), ["codex.cmd"]
+        )
+
+    def test_healthy_codex_uses_the_opt_in_profile(self) -> None:
+        self.assertEqual(
+            AICONFIG.auto_agent_command("codex", "codex.cmd", "headroom", "48731", True, ["exec", "x"]),
+            ["codex.cmd", "--profile", "headroom", "exec", "x"],
+        )
+
+    def test_management_calls_skip_the_proxy(self) -> None:
+        self.assertTrue(AICONFIG.is_management_call("claude", ["--version"]))
+        self.assertTrue(AICONFIG.is_management_call("claude", ["mcp", "list"]))
+        self.assertTrue(AICONFIG.is_management_call("codex", ["login"]))
+        self.assertTrue(AICONFIG.is_management_call("codex", ["exec", "--help"]))
+        self.assertFalse(AICONFIG.is_management_call("claude", []))
+        self.assertFalse(AICONFIG.is_management_call("claude", ["-p", "oi"]))
+        self.assertFalse(AICONFIG.is_management_call("codex", ["exec", "faça x"]))
+
+    def _run(self, argv: list[str], *, healthy: bool, environment: dict | None = None):
+        with (
+            mock.patch.object(AICONFIG.sys, "argv", ["aiconfig", "run", *argv]),
+            mock.patch.object(AICONFIG, "which", side_effect=lambda *names: names[0]),
+            mock.patch.object(AICONFIG, "ensure_headroom_proxy", return_value=healthy) as ensure,
+            mock.patch.object(AICONFIG, "write_headroom_mcp_config"),
+            mock.patch.object(AICONFIG, "_run_foreground", return_value=0) as run,
+            mock.patch.dict(os.environ, environment or {"AICONFIG_HEADROOM": ""}),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = AICONFIG.main()
+        return code, ensure, run, stderr.getvalue()
+
+    def test_run_falls_back_and_says_so_when_proxy_is_down(self) -> None:
+        code, ensure, run, stderr = self._run(["claude", "-p", "oi"], healthy=False)
+        self.assertEqual(code, 0)
+        ensure.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["claude", "-p", "oi"])
+        self.assertNotIn("ANTHROPIC_BASE_URL", " ".join(run.call_args.args[0]))
+        self.assertIn("abrindo claude direto", stderr)
+
+    def test_run_uses_headroom_when_proxy_is_healthy(self) -> None:
+        _code, _ensure, run, _stderr = self._run(["claude"], healthy=True)
+        self.assertEqual(run.call_args.args[0][:3], ["headroom", "wrap", "claude"])
+
+    def test_kill_switch_never_touches_the_proxy(self) -> None:
+        _code, ensure, run, _stderr = self._run(
+            ["codex"], healthy=True, environment={"AICONFIG_HEADROOM": "off"}
+        )
+        ensure.assert_not_called()
+        self.assertEqual(run.call_args.args[0], ["codex"])
+
+    def test_agent_help_is_passed_through_untouched(self) -> None:
+        _code, ensure, run, _stderr = self._run(["claude", "--help"], healthy=True)
+        ensure.assert_not_called()
+        self.assertEqual(run.call_args.args[0], ["claude", "--help"])
+
+    def test_session_env_disables_wrap_telemetry(self) -> None:
+        with mock.patch.object(AICONFIG, "default_ca_bundle_path", return_value=Path("nao-existe.pem")):
+            env, _notes = AICONFIG.headroom_session_env({})
+        self.assertEqual(env["HEADROOM_BEACON"], "off")
+
+    def test_start_lock_prevents_a_second_proxy_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "proxy.starting"
+            with (
+                mock.patch.object(AICONFIG, "_headroom_start_lock", return_value=lock),
+                mock.patch.object(AICONFIG, "start_headroom_proxy") as start,
+            ):
+                self.assertTrue(AICONFIG.start_headroom_proxy_once("headroom", "48731", {}))
+                self.assertFalse(AICONFIG.start_headroom_proxy_once("headroom", "48731", {}))
+        start.assert_called_once()
+
+    def test_shell_block_is_ascii_and_defines_both_agents(self) -> None:
+        for shell in ("powershell", "posix"):
+            block = AICONFIG.shell_integration_block(shell, "C:/Py/python.exe", "C:/repo/tools/aiconfig.py")
+            block.encode("ascii")
+            self.assertIn("run claude", block)
+            self.assertIn("run codex", block)
+            self.assertIn("warm", block)
+            self.assertTrue(block.startswith(AICONFIG.SHELL_BEGIN))
+
+    def test_shell_profile_block_is_added_updated_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile.ps1"
+            profile.write_bytes(b"\xef\xbb\xbf# meu perfil\r\nSet-Alias g git\r\n")
+            first = AICONFIG.shell_integration_block("powershell", "py1", "s")
+            second = AICONFIG.shell_integration_block("powershell", "py2", "s")
+            with contextlib.redirect_stdout(io.StringIO()):
+                AICONFIG.update_shell_profile(profile, first, self._ctx())
+                AICONFIG.update_shell_profile(profile, second, self._ctx())
+                text = profile.read_bytes()
+                self.assertTrue(text.startswith(b"\xef\xbb\xbf"))
+                decoded = text.decode("utf-8-sig")
+                self.assertIn("Set-Alias g git", decoded)
+                self.assertEqual(decoded.count(AICONFIG.SHELL_BEGIN), 1)
+                self.assertIn("py2", decoded)
+                self.assertNotIn("py1", decoded)
+                AICONFIG.update_shell_profile(profile, None, self._ctx())
+            final = profile.read_bytes().decode("utf-8-sig")
+        self.assertNotIn(AICONFIG.SHELL_BEGIN, final)
+        self.assertIn("Set-Alias g git", final)
+
+    def test_install_does_not_touch_shell_profiles_without_the_flag(self) -> None:
+        source = (ROOT / "tools/aiconfig.py").read_text(encoding="utf-8")
+        self.assertIn('getattr(args, "headroom_auto", False) or getattr(args, "no_headroom_auto", False)', source)
+
 @unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")
 class PowerShellInstallerTests(unittest.TestCase):
     def test_invalid_dry_run_preserves_error_and_skips_tools(self) -> None:

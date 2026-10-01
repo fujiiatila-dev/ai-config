@@ -8,10 +8,13 @@ agente, e não apenas referenciado.
 
 - **RTK** reduz a saída dos comandos de shell. Onde houver hook configurado ele
   reescreve os comandos sozinho; onde não houver, prefixe com `rtk`.
-- **Headroom** é opcional e fica no caminho de rede do provedor. Use-o somente
-  por sessão: `headroom wrap claude` ou `codex --profile headroom`. Nunca
-  persista `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, não instale hooks que iniciem
-  o proxy e mantenha os perfis padrão conectados diretamente aos provedores.
+- **Headroom** é opcional e fica no caminho de rede do provedor. O roteamento
+  vale sempre por sessão: `headroom wrap claude` ou `codex --profile headroom`.
+  O modo automático (`install --headroom-auto`) faz `claude` e `codex` passarem
+  pelo proxy sozinhos e abre a conexão direta se ele não estiver saudável.
+  Nunca persista `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, não instale hooks de
+  agente que iniciem o proxy e mantenha os perfis padrão conectados diretamente
+  aos provedores.
 - Leia só o trecho de arquivo de que precisa. Prefira `grep`/`rg` a despejar
   arquivos inteiros no contexto.
 

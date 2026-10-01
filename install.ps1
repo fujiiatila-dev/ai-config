@@ -47,6 +47,8 @@ uso: .\install.ps1 [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-t
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
   --ca-bundle      gera bundle de CA para Headroom/uv/pip atras de inspecao TLS
   --headroom       inicia Headroom por sessao (claude: wrap; proxy: para o Codex)
+  --headroom-auto  claude/codex passam pelo Headroom sozinhos, com fallback direto
+                   (--no-headroom-auto remove)
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
 Gitleaks e Trivy. Nada e sobrescrito sem backup.

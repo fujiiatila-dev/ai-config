@@ -23,6 +23,14 @@
 - [x] 4.2 README, HEADROOM.md, CONFIGURATION_MAP e regras do repositório.
 - [x] 4.3 Testes de include, hooks legados, findings, lançador e metadados.
 
+## 6. Headroom automático (pedido em 2026-10-01)
+
+- [x] 6.1 `run <claude|codex>`: garante o proxy, usa o Headroom se saudável e cai para o provedor direto.
+- [x] 6.2 Sem persistência: `--no-mcp` + `--mcp-config` por sessão, sem `--1m` (trocava o modelo para `claude-opus-5`), telemetria do `wrap` desligada.
+- [x] 6.3 `--headroom-auto` / `--no-headroom-auto`: bloco gerenciado nos perfis de shell, com pré-aquecimento só em sessão interativa.
+- [x] 6.4 Trava de partida e chamadas de gerenciamento direto ao agente.
+- [x] 6.5 Testes e documentação (HEADROOM.md, TOOLS.md, README, WORKFLOW.md).
+
 ## 5. Verificação
 
 - [x] 5.1 Preflight, suíte, `py_compile`, `bash -n`, dry-run e doctor.

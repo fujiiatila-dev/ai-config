@@ -2437,6 +2437,18 @@ def cmd_doctor(_args) -> int:
                 )
             print("        Headroom é opt-in; os perfis padrão continuam diretos aos provedores.")
 
+        auto_profiles = [
+            path for _shell, path in shell_profile_targets()
+            if path.exists() and SHELL_BEGIN in path.read_text(encoding="utf-8-sig", errors="replace")
+        ]
+        if auto_profiles:
+            print(
+                f"  {_c('32', 'ok')}       headroom-auto  ativo em {len(auto_profiles)} perfil(is) de shell; "
+                "sem proxy, `claude`/`codex` abrem direto"
+            )
+        else:
+            print("  -        headroom-auto  desligado (ative com --headroom-auto)")
+
         route_findings = headroom_persistence_findings()
         if route_findings:
             print("\n  Roteamento Headroom persistente")
@@ -2598,6 +2610,10 @@ def cmd_install(args) -> int:
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
 
+    # Opt-in: sem a flag, os perfis de shell do usuário não são tocados.
+    if getattr(args, "headroom_auto", False) or getattr(args, "no_headroom_auto", False):
+        install_shell_integration(ctx, enable=bool(getattr(args, "headroom_auto", False)))
+
     head("Resumo")
     if ctx.dry_run:
         print("  simulação concluída — nada foi escrito.")
@@ -2661,6 +2677,7 @@ def headroom_session_env(base: dict | None = None) -> tuple[dict, list[str]]:
     notes: list[str] = []
     env.setdefault("HEADROOM_DISABLE_KOMPRESS", "1")
     env.setdefault("HEADROOM_DISABLE_KOMPRESS_FALLBACK", "1")
+    env.setdefault("HEADROOM_BEACON", "off")  # telemetria do `wrap` desligada por padrão
     bundle = default_ca_bundle_path()
     if bundle.is_file() and not env.get("SSL_CERT_FILE"):
         env["SSL_CERT_FILE"] = str(bundle)
@@ -2707,7 +2724,312 @@ def cmd_headroom(args) -> int:
         return 130
 
 
+# ── modo automático do Headroom (opt-in, com fallback direto) ────────────────
+# A automação antiga persistia ANTHROPIC_BASE_URL e o provider do Codex: com o
+# proxy fora, toda sessão quebrava. Aqui o roteamento vale só para o processo
+# lançado e, se o proxy não estiver saudável a tempo, o agente abre direto.
+HEADROOM_AUTO_WAIT_SEC = 60.0
+SHELL_BEGIN = "# >>> ai-config headroom-auto >>>"
+SHELL_END = "# <<< ai-config headroom-auto <<<"
+
+
+def headroom_auto_wait() -> float:
+    raw = os.environ.get("AICONFIG_HEADROOM_WAIT", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else HEADROOM_AUTO_WAIT_SEC
+    except ValueError:
+        return HEADROOM_AUTO_WAIT_SEC
+
+
+def start_headroom_proxy(headroom: str, port: str, env: dict) -> None:
+    """Sobe o proxy destacado, sem janela, com log em ~/.headroom."""
+    log_dir = Path.home() / ".headroom"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = open(log_dir / "ai-config-proxy.log", "ab")  # noqa: SIM115 - herdado pelo filho
+    options: dict = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "env": env}
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        options["start_new_session"] = True
+    try:
+        subprocess.Popen(headroom_command("proxy", port, headroom, []), **options)
+    finally:
+        log.close()
+
+
+HEADROOM_START_LOCK_SEC = 150.0
+
+
+def _headroom_start_lock(port: str) -> Path:
+    return Path.home() / ".headroom" / f"ai-config-proxy-{port}.starting"
+
+
+def headroom_start_pending(port: str) -> bool:
+    """Outra partida do proxy (pré-aquecimento ou outra sessão) ainda está em curso."""
+    try:
+        return time.time() - _headroom_start_lock(port).stat().st_mtime < HEADROOM_START_LOCK_SEC
+    except OSError:
+        return False
+
+
+def start_headroom_proxy_once(headroom: str, port: str, env: dict) -> bool:
+    """Inicia o proxy, a menos que uma partida recente já esteja em andamento."""
+    if headroom_start_pending(port):
+        return False
+    lock = _headroom_start_lock(port)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()), encoding="ascii")
+    start_headroom_proxy(headroom, port, env)
+    return True
+
+
+def ensure_headroom_proxy(headroom: str, port: str, env: dict, wait: float) -> bool:
+    """True quando o proxy responde /readyz; inicia-o se preciso e espera até `wait`."""
+    if proxy_status(port) == "ok":
+        return True
+    try:
+        start_headroom_proxy_once(headroom, port, env)
+    except OSError as exc:
+        warn(f"não foi possível iniciar o Headroom ({exc})")
+        return False
+    print(f"  iniciando Headroom na porta {port} (até {int(wait)} s)...", file=sys.stderr, flush=True)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if proxy_status(port) == "ok":
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def auto_agent_command(
+    agent: str, agent_exe: str, headroom: str | None, port: str, healthy: bool, extra: list[str]
+) -> list[str]:
+    """Comando final: pelo Headroom quando saudável, direto caso contrário."""
+    if not healthy or not headroom:
+        return [agent_exe, *extra]
+    if agent == "claude":
+        # --no-mcp: o `wrap` gravaria o MCP `headroom` no ~/.claude.json para
+        # sempre; aqui ele vale só para esta sessão, via --mcp-config.
+        # Sem --1m: a flag fixa ANTHROPIC_MODEL num Opus específico e trocaria
+        # o modelo escolhido; um `model` com [1m] no settings.json já basta.
+        command = [
+            headroom, "wrap", "claude", "--no-proxy", "--no-mcp", "--port", port,
+            "--tool-search", "true", "--code-memory", "none",
+        ]
+        # `--` impede que flags do usuário (ex.: -p, --resume) sejam lidas pelo
+        # headroom. --mcp-config é variádico: vai por último para não engolir o prompt.
+        return [*command, "--", *extra, "--mcp-config", str(headroom_mcp_config_path())]
+    return [agent_exe, "--profile", "headroom", *extra]
+
+
+def headroom_mcp_config_path() -> Path:
+    return default_ca_bundle_path().parent / "headroom-mcp.json"
+
+
+def write_headroom_mcp_config(headroom: str, port: str) -> Path:
+    """Config de MCP por sessão (ferramenta de recuperação do Headroom)."""
+    path = headroom_mcp_config_path()
+    content = json.dumps(
+        {
+            "mcpServers": {
+                "headroom": {
+                    "type": "stdio",
+                    "command": headroom,
+                    "args": ["mcp", "serve"],
+                    "env": {"HEADROOM_PROXY_URL": f"http://127.0.0.1:{port}"},
+                }
+            }
+        },
+        indent=2,
+    ) + "\n"
+    if not path.exists() or path.read_text(encoding="utf-8") != content:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _run_foreground(command: list[str], env: dict) -> int:
+    """Roda uma TUI em primeiro plano; Ctrl+C pertence ao filho, não ao lançador."""
+    process = subprocess.Popen(command, env=env)
+    while True:
+        try:
+            return process.wait()
+        except KeyboardInterrupt:
+            continue
+
+
+def cmd_warm(_args) -> int:
+    """Pré-aquece o proxy em segundo plano e retorna na hora (chamado pelo perfil do shell)."""
+    if os.environ.get("AICONFIG_HEADROOM", "").strip().lower() in {"off", "0", "false", "no"}:
+        return 0
+    headroom = which("headroom", "headroom.exe")
+    if not headroom:
+        return 0
+    try:
+        port = configured_headroom_port()
+        if proxy_status(port) != "ok":
+            start_headroom_proxy_once(headroom, port, headroom_session_env()[0])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+# Chamadas que não abrem sessão de modelo: vão direto, sem esperar o proxy.
+DIRECT_AGENT_ARGS = {
+    "claude": {
+        "mcp", "config", "update", "doctor", "install", "plugin", "auth", "agents",
+        "setup-token", "migrate-installer", "--version", "-v", "--help", "-h",
+    },
+    "codex": {
+        "login", "logout", "mcp", "app-server", "completion", "debug", "doctor", "features",
+        "sandbox", "apply", "cloud", "update", "plugin", "marketplace",
+        "--version", "-V", "--help", "-h",
+    },
+}
+
+
+def is_management_call(agent: str, extra: list[str]) -> bool:
+    direct = DIRECT_AGENT_ARGS.get(agent, set())
+    return bool(extra) and (extra[0] in direct or any(a in {"--version", "--help", "-h"} for a in extra))
+
+
+def cmd_run(args) -> int:
+    """Abre `claude` ou `codex` pelo Headroom, com fallback para a conexão direta."""
+    extra = list(args.extra or [])
+    agent_exe = which(args.agent, f"{args.agent}.cmd", f"{args.agent}.exe")
+    if not agent_exe:
+        warn(f"{args.agent} não encontrado no PATH")
+        return 127
+    disabled = os.environ.get("AICONFIG_HEADROOM", "").strip().lower() in {"off", "0", "false", "no"}
+    if is_management_call(args.agent, extra):
+        return _run_foreground([agent_exe, *extra], dict(os.environ))
+    headroom = None if disabled else which("headroom", "headroom.exe")
+    env, _notes = headroom_session_env()
+    healthy = False
+    port = str(DEFAULT_HEADROOM_PORT)
+    if headroom:
+        try:
+            port = configured_headroom_port()
+            healthy = (
+                proxy_status(port) == "ok"
+                if args.dry_run
+                else ensure_headroom_proxy(headroom, port, env, headroom_auto_wait())
+            )
+        except ValueError as exc:
+            warn(str(exc))
+        if not healthy and not args.dry_run:
+            print(
+                f"  Headroom indisponível: abrindo {args.agent} direto no provedor "
+                "(log: ~/.headroom/ai-config-proxy.log)",
+                file=sys.stderr,
+            )
+    command = auto_agent_command(args.agent, agent_exe, headroom, port, healthy, extra)
+    if args.dry_run:
+        print(" ".join(command))
+        return 0
+    if healthy and headroom and args.agent == "claude":
+        write_headroom_mcp_config(headroom, port)
+    return _run_foreground(command, env if healthy else dict(os.environ))
+
+
+def shell_integration_block(shell: str, python: str, script: str) -> str:
+    """Funções `claude`/`codex` que passam pelo lançador automático."""
+    if shell == "powershell":
+        body = "\n".join(
+            f'function {agent} {{ & "{python}" "{script}" run {agent} @args }}' for agent in ("claude", "codex")
+        )
+        # Pre-aquecimento: nao bloqueia a abertura do terminal e so roda em
+        # sessao interativa (agentes abrem `pwsh -Command ...` a cada comando).
+        body += (
+            "\nif ($env:AICONFIG_HEADROOM -ne 'off' -and -not ([Environment]::GetCommandLineArgs() "
+            "-match '^-(c|command|f|file|e|encodedcommand|noni|noninteractive)$')) "
+            "{ try { Start-Process -WindowStyle Hidden "
+            f"-FilePath '{python}' -ArgumentList '\"{script}\"','warm' }} catch {{}} }}"
+        )
+    else:
+        body = "\n".join(
+            f'{agent}() {{ "{python}" "{script}" run {agent} "$@"; }}' for agent in ("claude", "codex")
+        )
+        body += (
+            '\ncase $- in *i*) [ "$AICONFIG_HEADROOM" = off ] || '
+            f'("{python}" "{script}" warm >/dev/null 2>&1 &) ;; esac'
+        )
+    # Somente ASCII: o Windows PowerShell 5.1 le perfis sem BOM como ANSI.
+    note = "# Headroom automatico com fallback direto. Desligue: AICONFIG_HEADROOM=off"
+    return f"{SHELL_BEGIN}\n{note}\n{body}\n{SHELL_END}\n"
+
+
+def shell_profile_targets() -> list[tuple[str, Path]]:
+    """Perfis de shell onde as funções entram (ou de onde saem)."""
+    targets: list[tuple[str, Path]] = []
+    if os.name == "nt":
+        for exe in ("pwsh", "powershell"):
+            found = which(exe)
+            if not found:
+                continue
+            try:
+                result = subprocess.run(
+                    [found, "-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserAllHosts"],
+                    capture_output=True, text=True, timeout=20,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            path = result.stdout.strip()
+            if result.returncode == 0 and path:
+                targets.append(("powershell", Path(path)))
+    for name in (".bashrc", ".zshrc"):
+        rc = Path.home() / name
+        if rc.exists():
+            targets.append(("posix", rc))
+    return targets
+
+
+def update_shell_profile(path: Path, block: str | None, ctx: Ctx) -> None:
+    """Escreve, atualiza ou remove (block=None) o bloco gerenciado de um perfil de shell."""
+    raw = path.read_bytes() if path.exists() else b""
+    bom = "﻿" if raw.startswith(b"\xef\xbb\xbf") else ""
+    current = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n")
+    pattern = re.compile(re.escape(SHELL_BEGIN) + r".*?" + re.escape(SHELL_END) + r"\n?", re.S)
+    if block is None:
+        updated = pattern.sub("", current)
+    elif pattern.search(current):
+        updated = pattern.sub(lambda _m: block, current)
+    else:
+        updated = (current.rstrip("\n") + "\n\n" if current.strip() else "") + block
+    if updated == current:
+        keep(f"{path} (já em dia)")
+        return
+    ctx.write(path, bom + updated)
+    add(f"{path} ({'modo automático removido' if block is None else 'modo automático do Headroom'})")
+
+
+def install_shell_integration(ctx: Ctx, enable: bool) -> None:
+    head("Headroom automático")
+    python = str(resolve_python()).replace("\\", "/")
+    script = str(ROOT / "tools" / "aiconfig.py").replace("\\", "/")
+    targets = shell_profile_targets()
+    if not targets:
+        warn("nenhum perfil de shell encontrado (PowerShell, ~/.bashrc ou ~/.zshrc)")
+    for shell, path in targets:
+        update_shell_profile(path, shell_integration_block(shell, python, script) if enable else None, ctx)
+    if enable and targets:
+        print("  abra um terminal novo: `claude` e `codex` passam pelo Headroom e caem")
+        print("  para a conexão direta se o proxy não responder.")
+
+
 def main() -> int:
+    # `run <agente> ...` repassa tudo ao agente (inclusive --help): não passa
+    # pelo argparse. `--aiconfig-dry-run` logo após o agente só mostra o comando.
+    if len(sys.argv) >= 3 and sys.argv[1] == "run" and sys.argv[2] in DIRECT_AGENT_ARGS:
+        rest = sys.argv[3:]
+        dry_run = bool(rest) and rest[0] == "--aiconfig-dry-run"
+        return cmd_run(
+            argparse.Namespace(agent=sys.argv[2], extra=rest[1:] if dry_run else rest, dry_run=dry_run)
+        )
+
     p = argparse.ArgumentParser(prog="aiconfig", description=__doc__)
     sub = p.add_subparsers(dest="cmd")
 
@@ -2728,6 +3050,17 @@ def main() -> int:
         "--harden-codex",
         action="store_true",
         help="aplica defaults seguros ao Codex e remove confiança ampla exata",
+    )
+    auto = i.add_mutually_exclusive_group()
+    auto.add_argument(
+        "--headroom-auto",
+        action="store_true",
+        help="`claude`/`codex` passam pelo Headroom automaticamente, com fallback direto",
+    )
+    auto.add_argument(
+        "--no-headroom-auto",
+        action="store_true",
+        help="remove o modo automático do Headroom dos perfis de shell",
     )
     g = i.add_mutually_exclusive_group()
     g.add_argument("--keep-existing", action="store_true", help="conflito: mantém o local")
@@ -2759,6 +3092,9 @@ def main() -> int:
     # a sessão de verdade. Argumentos para o headroom vão depois de `--`.
     h.add_argument("extra", nargs="*", help="argumentos para o headroom, após `--`")
     h.set_defaults(func=cmd_headroom)
+
+    w = sub.add_parser("warm", help="pré-aquece o proxy Headroom em segundo plano")
+    w.set_defaults(func=cmd_warm)
 
     args, unknown = p.parse_known_args()
     if unknown:
