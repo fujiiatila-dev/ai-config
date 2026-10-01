@@ -49,6 +49,54 @@ elas, o proxy fica pronto em cerca de 30 s e repassa ao provedor normalmente.
 A alternativa definitiva é excluir os domínios dos provedores da inspeção
 HTTPS do antivírus; veja [TOOLS.md > TLS interceptado](TOOLS.md#tls-interceptado).
 
+## Modo automático (opt-in, com fallback direto)
+
+Para não ter de lembrar do Headroom a cada sessão:
+
+```powershell
+.\install.ps1 --headroom-auto --keep-existing --skip-tools   # ativa
+.\install.ps1 --no-headroom-auto --keep-existing --skip-tools # desativa
+```
+
+Isso grava um bloco delimitado no perfil do shell (PowerShell 7, Windows
+PowerShell, `~/.bashrc`, `~/.zshrc`) que define `claude` e `codex` como funções.
+Ao chamar uma delas, o lançador:
+
+1. confere `/readyz`; se o proxy não estiver de pé, sobe-o em segundo plano,
+   sem janela, e espera até 60 s (`AICONFIG_HEADROOM_WAIT` muda o limite);
+2. com o proxy saudável, abre o agente pelo Headroom: `headroom wrap claude
+   --no-proxy --no-mcp …` ou `codex --profile headroom`;
+3. com o proxy fora, avisa em uma linha e abre o agente **direto no provedor**.
+
+O que o modo automático **não** faz, de propósito:
+
+- não persiste `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` nem troca o provider
+  padrão do Codex: o roteamento vale só para o processo iniciado;
+- não registra o MCP `headroom` no `~/.claude.json`: a ferramenta de
+  recuperação entra só naquela sessão, por `--mcp-config`;
+- não usa `--1m`, que fixaria `ANTHROPIC_MODEL` num Opus específico. Um `model`
+  com `[1m]` no `settings.json` já preserva a janela de 1M pelo proxy;
+- não espera o proxy em chamadas de gerenciamento (`claude --version`,
+  `claude mcp …`, `codex login`, `--help`), que vão direto.
+
+Um terminal interativo novo pré-aquece o proxy em segundo plano, então a espera
+de partida a frio (30 a 90 s) normalmente termina antes de você abrir o agente.
+O proxy continua rodando depois que a sessão fecha; o log fica em
+`~/.headroom/ai-config-proxy.log`.
+
+Para desligar numa sessão do shell: `$env:AICONFIG_HEADROOM = 'off'` (ou
+`export AICONFIG_HEADROOM=off`). Atalhos de IDE e o app desktop não passam
+pelas funções do shell e continuam abrindo direto.
+
+## Lançador do repositório
+
+`./install.sh --headroom claude` (ou `.\install.ps1 --headroom claude`) aplica
+as variáveis `HEADROOM_DISABLE_KOMPRESS*` e, se existir, o bundle de CA, só no
+processo iniciado, e roda `headroom wrap claude --port <porta> --tool-search true`.
+`--headroom proxy` sobe o proxy para `codex --profile headroom`. Use
+`--dry-run` para ver o comando sem executar. As seções abaixo mostram o
+equivalente manual.
+
 ## Claude: sessão opt-in
 
 Use o wrapper, que limita `ANTHROPIC_BASE_URL` ao processo iniciado:

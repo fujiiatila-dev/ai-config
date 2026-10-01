@@ -84,8 +84,22 @@ MANAGED_TOOL_VERSION_KEYS = {
 }
 
 VALIDATION_SCHEMA_VERSION = 1
+ADAPTER_INSTRUCTION_FILES = (
+    "adapters/codex/AGENTS.md",
+    "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
+)
 VALIDATION_PLACEHOLDERS = frozenset(
-    {"PYTHON", "NODE", "CLAUDE_HOME", "CODEX_HOME", "HEADROOM", "HEADROOM_PORT"}
+    {
+        "PYTHON",
+        "NODE",
+        "CLAUDE_HOME",
+        "CODEX_HOME",
+        "HEADROOM",
+        "HEADROOM_PORT",
+        "AGENTS_HOME",
+        "AGENTS_HOME_WIN",
+    }
 )
 VALIDATION_REQUIRED_SOURCES = (
     "claude/settings.json",
@@ -98,7 +112,11 @@ VALIDATION_REQUIRED_SOURCES = (
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
     "adapters/codex/headroom.config.toml.example",
+    "adapters/codex/hooks.json",
+    "adapters/codex/windows.config.toml.example",
+    "adapters/codex/hooks.impeccable.json",
     "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
     "adapters/rtk/filters.toml",
     "tools/recover_codex_sessions.py",
     "versions.json",
@@ -114,7 +132,11 @@ VALIDATION_PORTABLE_FILES = (
     "adapters/codex/AGENTS.md",
     "adapters/codex/config.toml.example",
     "adapters/codex/headroom.config.toml.example",
+    "adapters/codex/hooks.json",
+    "adapters/codex/windows.config.toml.example",
+    "adapters/codex/hooks.impeccable.json",
     "adapters/gemini/GEMINI.md",
+    "adapters/gemini/antigravity-rule.md",
     "adapters/rtk/filters.toml",
     "versions.json",
 )
@@ -369,7 +391,49 @@ def _subst(node, table: dict[str, str]):
     return node
 
 
-def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
+# Hooks instalados por versões antigas (ou por outros instaladores) que estão
+# comprovadamente quebrados no destino. Cada um vira conflito explícito: o
+# instalador pergunta, e só remove com a escolha "repo" (ou --prefer-repo).
+def _codex_legacy_hook(hook: dict) -> str | None:
+    command = str(hook.get("command", "")).strip()
+    windows = str(hook.get("commandWindows", "")).strip()
+    if command == "rtk hook claude":
+        return "usa o processador do Claude; o do Codex é `rtk hook codex`"
+    if windows.lower().startswith("if exist"):
+        return "commandWindows em sintaxe cmd; o Codex executa hooks no PowerShell (ParserError)"
+    return None
+
+
+def drop_legacy_hooks(data: dict, ctx: Ctx, where: str, detector) -> dict:
+    """Remove, mediante escolha, hooks que `detector` reconhece como legados."""
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return data
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        kept_entries = []
+        for entry in entries:
+            kept = []
+            for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+                reason = detector(hook) if isinstance(hook, dict) else None
+                if reason and ctx.choose(
+                    f"{where} :: {event} :: hook legado ({reason})",
+                    "manter o hook atual",
+                    "substituir pelo hook do repo",
+                ) == "repo":
+                    add(f"{where} :: {event} (hook legado substituído)")
+                    continue
+                kept.append(hook)
+            if not isinstance(entry, dict) or kept:
+                if isinstance(entry, dict):
+                    entry = {**entry, "hooks": kept}
+                kept_entries.append(entry)
+        hooks[event] = kept_entries
+    return data
+
+
+def install_json(src: Path, dest: Path, ctx: Ctx, subst=None, legacy=None) -> None:
     repo = json.loads(src.read_text(encoding="utf-8"))
     if subst:
         repo = _subst(repo, subst)
@@ -387,7 +451,10 @@ def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
 
     # Merge sobre uma cópia: `local` continua sendo a linha de base intacta da
     # comparação abaixo.
-    merged = merge_json(copy.deepcopy(local), repo, ctx)
+    base = copy.deepcopy(local)
+    if legacy:
+        base = drop_legacy_hooks(base, ctx, str(dest), legacy)
+    merged = merge_json(base, repo, ctx)
     if _key(merged) == _key(local):
         keep(f"{dest} (já em dia)")
         return
@@ -396,12 +463,28 @@ def install_json(src: Path, dest: Path, ctx: Ctx, subst=None) -> None:
 
 
 # ── merge de markdown via bloco gerenciado ───────────────────────────────────
-def install_markdown(src: Path, dest: Path, ctx: Ctx) -> None:
-    body = src.read_text(encoding="utf-8").strip()
+INCLUDE_RE = re.compile(r"^<!-- ai-config:include (?P<path>[\w./-]+) -->$", re.M)
+
+
+def expand_includes(body: str, root: Path = ROOT) -> str:
+    """Troca `<!-- ai-config:include caminho -->` pelo arquivo do repo.
+
+    Codex e Antigravity não expandem `@arquivo`; o conteúdo precisa estar no
+    próprio arquivo de instruções. A fonte continua única no repositório.
+    """
+    return INCLUDE_RE.sub(
+        lambda m: (root / m.group("path")).read_text(encoding="utf-8").strip(), body
+    )
+
+
+def install_markdown(src: Path, dest: Path, ctx: Ctx, preamble: str = "") -> None:
+    body = expand_includes(src.read_text(encoding="utf-8").strip())
     block = f"{BEGIN}\n{body}\n{END}\n"
 
     if not dest.exists() or not dest.read_text(encoding="utf-8").strip():
-        ctx.write(dest, block)
+        # O preâmbulo (ex.: frontmatter de regra do Antigravity) precisa ser a
+        # primeira coisa do arquivo, fora do bloco gerenciado.
+        ctx.write(dest, preamble + block)
         add(f"{dest} (criado)")
         return
 
@@ -643,6 +726,36 @@ def is_store_alias(path: str) -> bool:
     return "windowsapps" in parts
 
 
+ANTIGRAVITY_RULE_FRONTMATTER = (
+    "---\n"
+    "trigger: always_on\n"
+    "description: Padrão de trabalho do ai-config (OpenSpec, qualidade, segurança, RTK, Headroom)\n"
+    "---\n\n"
+)
+
+
+def agents_home_dir() -> Path:
+    """Raiz ~/.agents, onde o Codex procura skills de usuário."""
+    override = os.environ.get("AGENTS_HOME", "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".agents"
+
+
+def windows_short_path(path: Path) -> str:
+    """Caminho com barra invertida e sem espaços (nome 8.3) para comandos sem aspas."""
+    text = str(path).replace("/", "\\")
+    if os.name != "nt" or " " not in text:
+        return text
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(1024)
+        if ctypes.windll.kernel32.GetShortPathNameW(text, buffer, 1024):
+            return buffer.value
+    except (OSError, AttributeError):
+        pass
+    return text
+
+
 def resolve_python() -> str:
     """Interpretador para {{PYTHON}}: o que roda o instalador, nunca um alias."""
     if sys.executable and not is_store_alias(sys.executable):
@@ -729,6 +842,30 @@ def tool_version(exe: str, timeout: float | None = None) -> str | None:
             break
         except Exception:
             continue
+    return None
+
+
+def python_dist_version(exe: str, dist: str) -> str | None:
+    """Versão de um pacote Python lida dos metadados do interpretador dono do exe.
+
+    `semgrep --version` importa o pacote inteiro (10–15 s com antivírus); os
+    metadados respondem em milissegundos sem executar o CLI.
+    """
+    scripts = Path(exe).resolve().parent
+    for interpreter in (scripts.parent / "python.exe", scripts / "python.exe", scripts / "python3"):
+        if not interpreter.is_file():
+            continue
+        try:
+            result = subprocess.run(
+                [str(interpreter), "-c", f"import importlib.metadata as m; print(m.version({dist!r}))"],
+                capture_output=True, text=True, timeout=VERSION_PROBE_TIMEOUT_SEC,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        version = result.stdout.strip()
+        if result.returncode == 0 and re.fullmatch(r"\d+(\.\d+)+", version):
+            return version
     return None
 
 
@@ -1146,6 +1283,102 @@ def claude_local_findings(claude_home: Path | None = None) -> list[str]:
     return findings
 
 
+# Skills neutras, instaladas também para Codex e Antigravity. O Impeccable fica
+# de fora: ele distribui um build próprio por agente (caminhos e subagentes).
+SHARED_SKILLS = ("openspec", "qualidade", "security-audit")
+
+
+def _repo_skill_names() -> list[str]:
+    return list(SHARED_SKILLS)
+
+
+def install_shared_skills(dest: Path, ctx: Ctx, rotulo: str) -> None:
+    for name in SHARED_SKILLS:
+        install_tree(ROOT / "claude/skills" / name, dest / name, ctx, f"{rotulo}/{name}")
+
+
+def _skill_drift(skills_dir: Path) -> tuple[list[str], list[str]]:
+    """(ausentes, desatualizadas) comparando o SKILL.md de cada skill do repo."""
+    missing, stale = [], []
+    for name in _repo_skill_names():
+        installed = skills_dir / name / "SKILL.md"
+        if not installed.exists():
+            missing.append(name)
+        elif not filecmp.cmp(ROOT / "claude/skills" / name / "SKILL.md", installed, shallow=False):
+            stale.append(name)
+    return missing, stale
+
+
+def codex_local_findings(
+    codex_home: Path | None = None, agents_home: Path | None = None, windows: bool | None = None
+) -> list[str]:
+    """Problemas do perfil Codex que abrem janelas ou escondem as ferramentas do repo."""
+    codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    agents_home = agents_home or agents_home_dir()
+    windows = os.name == "nt" if windows is None else windows
+    if not codex_home.exists():
+        return []
+    findings: list[str] = []
+
+    config = codex_home / "config.toml"
+    if windows and config.exists():
+        features = _toml_keys(_toml_sections(config.read_text(encoding="utf-8")).get("[features]", []))
+        if features.get("daemon_auto_start", "true").strip().lower() != "false":
+            findings.append(
+                "features.daemon_auto_start ativo: o daemon abre uma janela por hook/git "
+                "(openai/codex#44768); rode o instalador e depois `codex app-server daemon stop`"
+            )
+
+    hooks_path = codex_home / "hooks.json"
+    if hooks_path.exists():
+        try:
+            hooks = json.loads(hooks_path.read_text(encoding="utf-8")).get("hooks", {})
+        except (OSError, json.JSONDecodeError):
+            findings.append("hooks.json não pôde ser lido")
+            hooks = {}
+        commands = [
+            hook
+            for entries in hooks.values() if isinstance(entries, list)
+            for entry in entries if isinstance(entry, dict)
+            for hook in entry.get("hooks", []) if isinstance(hook, dict)
+        ]
+        for hook in commands:
+            reason = _codex_legacy_hook(hook)
+            if reason:
+                findings.append(f"hook legado em hooks.json: {reason}")
+        if not any(str(h.get("command", "")).strip() == "rtk hook codex" for h in commands):
+            findings.append("hook `rtk hook codex` ausente: a saída do shell não é condensada")
+
+    agents_md = codex_home / "AGENTS.md"
+    if agents_md.exists() and re.search(r"^@WORKFLOW\.md\s*$", agents_md.read_text(encoding="utf-8"), re.M):
+        findings.append(
+            "AGENTS.md usa `@WORKFLOW.md`, que o Codex não expande: o padrão de trabalho não chega ao modelo"
+        )
+
+    missing, stale = _skill_drift(agents_home / "skills")
+    if missing:
+        findings.append(f"skills ausentes em {agents_home / 'skills'}: {', '.join(missing)}")
+    if stale:
+        findings.append(f"skills desatualizadas em {agents_home / 'skills'}: {', '.join(stale)}")
+    return findings
+
+
+def antigravity_local_findings(gemini_home: Path | None = None) -> list[str]:
+    """Regra global e skills que o Antigravity lê de ~/.gemini/config."""
+    gemini_home = gemini_home or Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
+    if not gemini_home.exists():
+        return []
+    findings: list[str] = []
+    if not (gemini_home / "config" / "rules" / "ai-config.md").exists():
+        findings.append("regra global ausente em config/rules/ai-config.md: o Antigravity não recebe o WORKFLOW")
+    missing, stale = _skill_drift(gemini_home / "config" / "skills")
+    if missing:
+        findings.append(f"skills ausentes em config/skills: {', '.join(missing)}")
+    if stale:
+        findings.append(f"skills desatualizadas em config/skills: {', '.join(stale)}")
+    return findings
+
+
 def rtk_identity_ok(exe: str) -> bool:
     """O `rtk` do PATH é o Rust Token Killer (tem `gain`), não o Rust Type Kit."""
     try:
@@ -1224,6 +1457,21 @@ def headroom_persistence_findings(
                 findings.append(
                     "Claude: settings.json contém hook que inicia ou recupera Headroom automaticamente"
                 )
+
+    # `headroom wrap claude` registra o MCP `headroom` no ~/.claude.json e o
+    # remove ao sair; se a sessão morrer, o registro fica e toda sessão comum
+    # passa a iniciar `headroom mcp serve` apontando para um proxy parado.
+    claude_state = Path(os.environ.get("CLAUDE_STATE_FILE", Path.home() / ".claude.json"))
+    if claude_state.exists():
+        try:
+            servers = json.loads(claude_state.read_text(encoding="utf-8")).get("mcpServers", {})
+        except (OSError, json.JSONDecodeError, AttributeError):
+            servers = {}
+        if isinstance(servers, dict) and "headroom" in servers:
+            findings.append(
+                "Claude: MCP `headroom` persistido em ~/.claude.json (sobra de um wrap "
+                "interrompido); remova com `claude mcp remove headroom --scope user`"
+            )
 
     codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     codex_config = codex_home / "config.toml"
@@ -1634,19 +1882,21 @@ def _validate_structure(root: Path, report: ValidationReport) -> None:
                 "corrija o caminho relativo no mapa ou restaure o arquivo",
             )
 
-    for relative in (
-        "claude/CLAUDE.md",
-        "adapters/codex/AGENTS.md",
-        "adapters/gemini/GEMINI.md",
-    ):
+    # O Claude Code expande `@WORKFLOW.md`; Codex e Antigravity não, e recebem
+    # o mesmo arquivo incorporado pelo include na instalação.
+    references = {"claude/CLAUDE.md": "@WORKFLOW.md"}
+    references.update(
+        {relative: "<!-- ai-config:include shared/WORKFLOW.md -->" for relative in ADAPTER_INSTRUCTION_FILES}
+    )
+    for relative, marker in references.items():
         path = root / relative
         text = _validation_read(path, report, root)
-        if text is not None and "@WORKFLOW.md" not in text:
+        if text is not None and marker not in text:
             report.error(
                 "workflow-reference-missing",
                 relative,
                 "o adapter não referencia o WORKFLOW compartilhado",
-                "use @WORKFLOW.md para manter uma única fonte de regras",
+                f"use {marker} para manter uma única fonte de regras",
             )
 
 
@@ -1794,7 +2044,7 @@ def _validate_wrapper_parity(root: Path, report: ValidationReport) -> None:
         text = _validation_read(path, report, root)
         if text is None:
             continue
-        for command in ("validate", "doctor", "ca-bundle"):
+        for command in ("validate", "doctor", "ca-bundle", "headroom"):
             if f"--{command}" not in text:
                 report.error(
                     "wrapper-command-missing",
@@ -2006,6 +2256,28 @@ def _validate_workflow(root: Path, report: ValidationReport) -> None:
             "documente validate, dry-run, apply, doctor, security, quality e commit",
         )
 
+    # Codex e Antigravity não expandem `@arquivo`: o conteúdo vem por include
+    # resolvido na instalação, e todo include precisa apontar para um arquivo.
+    for relative in ADAPTER_INSTRUCTION_FILES:
+        adapter = _validation_read(root / relative, report, root)
+        if adapter is None:
+            continue
+        if re.search(r"^@\S+", adapter, re.M):
+            report.error(
+                "adapter-import-unsupported",
+                relative,
+                "o adapter usa `@arquivo`, que Codex e Antigravity não expandem",
+                "use <!-- ai-config:include caminho --> para incorporar o conteúdo",
+            )
+        for match in INCLUDE_RE.finditer(adapter):
+            if not (root / match.group("path")).is_file():
+                report.error(
+                    "adapter-include-missing",
+                    relative,
+                    f"include aponta para arquivo inexistente: {match.group('path')}",
+                    "corrija o caminho relativo à raiz do repositório",
+                )
+
 
 def _bash_for_validation() -> str | None:
     if os.name != "nt":
@@ -2094,7 +2366,9 @@ def cmd_doctor(_args) -> int:
             print(f"  {_c('33', 'ausente')}  {nome:<10} — {nota}")
             faltando.append(nome)
             continue
-        v = tool_version(exe, VERSION_PROBE_TIMEOUTS.get(nome)) if exe else package_version
+        v = (python_dist_version(exe, "semgrep") if exe and nome == "semgrep" else None) or (
+            tool_version(exe, VERSION_PROBE_TIMEOUTS.get(nome)) if exe else package_version
+        )
         v = v or "?"
         ref = esperado.get(chave)
         marca = ""
@@ -2107,11 +2381,15 @@ def cmd_doctor(_args) -> int:
                 "Rust Token Killer (colisão com Rust Type Kit?)"
             )
 
-    local_findings = claude_local_findings()
-    if local_findings:
-        print("\n  Claude Code local")
-        for finding in local_findings:
-            print(f"  {_c('33', '!')}       {finding}")
+    for title, findings_for_agent in (
+        ("Claude Code local", claude_local_findings()),
+        ("Codex local", codex_local_findings()),
+        ("Antigravity local", antigravity_local_findings()),
+    ):
+        if findings_for_agent:
+            print(f"\n  {title}")
+            for finding in findings_for_agent:
+                print(f"  {_c('33', '!')}       {finding}")
 
     tls, issuer = tls_inspection_status()
     if tls == "inspecionado":
@@ -2159,6 +2437,18 @@ def cmd_doctor(_args) -> int:
                 )
             print("        Headroom é opt-in; os perfis padrão continuam diretos aos provedores.")
 
+        auto_profiles = [
+            path for _shell, path in shell_profile_targets()
+            if path.exists() and SHELL_BEGIN in path.read_text(encoding="utf-8-sig", errors="replace")
+        ]
+        if auto_profiles:
+            print(
+                f"  {_c('32', 'ok')}       headroom-auto  ativo em {len(auto_profiles)} perfil(is) de shell; "
+                "sem proxy, `claude`/`codex` abrem direto"
+            )
+        else:
+            print("  -        headroom-auto  desligado (ative com --headroom-auto)")
+
         route_findings = headroom_persistence_findings()
         if route_findings:
             print("\n  Roteamento Headroom persistente")
@@ -2202,6 +2492,7 @@ def cmd_install(args) -> int:
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     gemini_home = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini"))
     rtk_home = Path(os.environ.get("RTK_CONFIG_DIR", Path.home() / ".config" / "rtk"))
+    agents_home = agents_home_dir()
     try:
         porta = configured_headroom_port()
     except ValueError as exc:
@@ -2233,6 +2524,10 @@ def cmd_install(args) -> int:
         "CODEX_HOME": fwd(codex_home),
         "HEADROOM": fwd(headroom),
         "HEADROOM_PORT": porta,
+        "AGENTS_HOME": fwd(agents_home),
+        # Sem aspas o mesmo comando vale no cmd e no PowerShell; por isso o
+        # caminho não pode ter espaço (usa o nome curto 8.3 quando houver).
+        "AGENTS_HOME_WIN": windows_short_path(agents_home),
     }
 
     head("Claude Code")
@@ -2262,21 +2557,62 @@ def cmd_install(args) -> int:
     install_toml(
         ROOT / "adapters/codex/config.toml.example", codex_home / "config.toml", ctx, subst
     )
+    if os.name == "nt":
+        install_toml(
+            ROOT / "adapters/codex/windows.config.toml.example",
+            codex_home / "config.toml",
+            ctx,
+            subst,
+        )
     install_toml(
         ROOT / "adapters/codex/headroom.config.toml.example",
         codex_home / "headroom.config.toml",
         ctx,
         subst,
     )
+    install_json(
+        ROOT / "adapters/codex/hooks.json",
+        codex_home / "hooks.json",
+        ctx,
+        subst,
+        legacy=_codex_legacy_hook,
+    )
+    # Os hooks do Impeccable chamam o build dele para Codex, instalado pelo
+    # próprio Impeccable em ~/.agents; sem o launcher, o hook só falharia.
+    if (agents_home / "skills" / "impeccable" / "scripts" / "impeccable.cmd").exists() or (
+        os.name != "nt" and (agents_home / "skills" / "impeccable" / "scripts" / "impeccable").exists()
+    ):
+        install_json(
+            ROOT / "adapters/codex/hooks.impeccable.json",
+            codex_home / "hooks.json",
+            ctx,
+            subst,
+            legacy=_codex_legacy_hook,
+        )
+    # O Codex lê skills de usuário em ~/.agents/skills (não em ~/.codex).
+    install_shared_skills(agents_home / "skills", ctx, "skills (Codex)")
     if getattr(args, "harden_codex", False):
         harden_codex_config(codex_home / "config.toml", ctx)
 
     head("Gemini / Antigravity")
     install_markdown(ROOT / "adapters/gemini/GEMINI.md", gemini_home / "GEMINI.md", ctx)
     install_markdown(ROOT / "shared/WORKFLOW.md", gemini_home / "WORKFLOW.md", ctx)
+    # O Antigravity não lê ~/.gemini/GEMINI.md: a raiz global dele é
+    # ~/.gemini/config (rules/ e skills/).
+    install_markdown(
+        ROOT / "adapters/gemini/antigravity-rule.md",
+        gemini_home / "config" / "rules" / "ai-config.md",
+        ctx,
+        preamble=ANTIGRAVITY_RULE_FRONTMATTER,
+    )
+    install_shared_skills(gemini_home / "config" / "skills", ctx, "skills (Antigravity)")
 
     head("RTK")
     install_toml(ROOT / "adapters/rtk/filters.toml", rtk_home / "filters.toml", ctx)
+
+    # Opt-in: sem a flag, os perfis de shell do usuário não são tocados.
+    if getattr(args, "headroom_auto", False) or getattr(args, "no_headroom_auto", False):
+        install_shell_integration(ctx, enable=bool(getattr(args, "headroom_auto", False)))
 
     head("Resumo")
     if ctx.dry_run:
@@ -2332,7 +2668,368 @@ def cmd_ca_bundle(args) -> int:
     return 0
 
 
+def headroom_session_env(base: dict | None = None) -> tuple[dict, list[str]]:
+    """Ambiente de uma sessão Headroom: Kompress desligado e, se existir, o bundle de CA.
+
+    Nada é persistido: as variáveis valem só para o processo lançado.
+    """
+    env = dict(os.environ if base is None else base)
+    notes: list[str] = []
+    env.setdefault("HEADROOM_DISABLE_KOMPRESS", "1")
+    env.setdefault("HEADROOM_DISABLE_KOMPRESS_FALLBACK", "1")
+    env.setdefault("HEADROOM_BEACON", "off")  # telemetria do `wrap` desligada por padrão
+    bundle = default_ca_bundle_path()
+    if bundle.is_file() and not env.get("SSL_CERT_FILE"):
+        env["SSL_CERT_FILE"] = str(bundle)
+        env.setdefault("REQUESTS_CA_BUNDLE", str(bundle))
+        notes.append(f"bundle de CA: {bundle}")
+    return env, notes
+
+
+def headroom_command(target: str, port: str, headroom: str, extra: list[str]) -> list[str]:
+    if target == "claude":
+        return [headroom, "wrap", "claude", "--port", port, "--tool-search", "true", *extra]
+    return [
+        headroom, "proxy", "--host", "127.0.0.1", "--port", port,
+        "--mode", "cache", "--no-telemetry", *extra,
+    ]
+
+
+def cmd_headroom(args) -> int:
+    """Inicia Headroom por sessão (Claude via wrap, ou o proxy para `codex --profile headroom`)."""
+    headroom = which("headroom", "headroom.exe")
+    if not headroom:
+        warn("headroom não encontrado no PATH; veja TOOLS.md > Headroom")
+        return 1
+    try:
+        port = configured_headroom_port()
+    except ValueError as exc:
+        warn(str(exc))
+        return 2
+    env, notes = headroom_session_env()
+    if os.name == "nt" and not any(n.startswith("bundle") for n in notes):
+        if tls_inspection_status()[0] == "inspecionado":
+            warn("HTTPS interceptado e sem bundle: rode  --ca-bundle  antes, ou o proxy não sobe")
+    command = headroom_command(args.target, port, headroom, list(args.extra or []))
+    for note in notes:
+        keep(note)
+    keep("executando: " + " ".join(command[1:]))
+    if args.target == "proxy":
+        print(f"  quando /readyz responder, rode em outro terminal:  codex --profile headroom")
+    if args.dry_run:
+        return 0
+    try:
+        return subprocess.call(command, env=env)
+    except KeyboardInterrupt:
+        return 130
+
+
+# ── modo automático do Headroom (opt-in, com fallback direto) ────────────────
+# A automação antiga persistia ANTHROPIC_BASE_URL e o provider do Codex: com o
+# proxy fora, toda sessão quebrava. Aqui o roteamento vale só para o processo
+# lançado e, se o proxy não estiver saudável a tempo, o agente abre direto.
+HEADROOM_AUTO_WAIT_SEC = 60.0
+SHELL_BEGIN = "# >>> ai-config headroom-auto >>>"
+SHELL_END = "# <<< ai-config headroom-auto <<<"
+
+
+def headroom_auto_wait() -> float:
+    raw = os.environ.get("AICONFIG_HEADROOM_WAIT", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else HEADROOM_AUTO_WAIT_SEC
+    except ValueError:
+        return HEADROOM_AUTO_WAIT_SEC
+
+
+def start_headroom_proxy(headroom: str, port: str, env: dict) -> None:
+    """Sobe o proxy destacado, sem janela, com log em ~/.headroom."""
+    log_dir = Path.home() / ".headroom"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = open(log_dir / "ai-config-proxy.log", "ab")  # noqa: SIM115 - herdado pelo filho
+    options: dict = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "env": env}
+    if os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        options["start_new_session"] = True
+    try:
+        subprocess.Popen(headroom_command("proxy", port, headroom, []), **options)
+    finally:
+        log.close()
+
+
+HEADROOM_START_LOCK_SEC = 150.0
+
+
+def _headroom_start_lock(port: str) -> Path:
+    return Path.home() / ".headroom" / f"ai-config-proxy-{port}.starting"
+
+
+def headroom_start_pending(port: str) -> bool:
+    """Outra partida do proxy (pré-aquecimento ou outra sessão) ainda está em curso."""
+    try:
+        return time.time() - _headroom_start_lock(port).stat().st_mtime < HEADROOM_START_LOCK_SEC
+    except OSError:
+        return False
+
+
+def start_headroom_proxy_once(headroom: str, port: str, env: dict) -> bool:
+    """Inicia o proxy, a menos que uma partida recente já esteja em andamento."""
+    if headroom_start_pending(port):
+        return False
+    lock = _headroom_start_lock(port)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()), encoding="ascii")
+    start_headroom_proxy(headroom, port, env)
+    return True
+
+
+def ensure_headroom_proxy(headroom: str, port: str, env: dict, wait: float) -> bool:
+    """True quando o proxy responde /readyz; inicia-o se preciso e espera até `wait`."""
+    if proxy_status(port) == "ok":
+        return True
+    try:
+        start_headroom_proxy_once(headroom, port, env)
+    except OSError as exc:
+        warn(f"não foi possível iniciar o Headroom ({exc})")
+        return False
+    print(f"  iniciando Headroom na porta {port} (até {int(wait)} s)...", file=sys.stderr, flush=True)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if proxy_status(port) == "ok":
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def auto_agent_command(
+    agent: str, agent_exe: str, headroom: str | None, port: str, healthy: bool, extra: list[str]
+) -> list[str]:
+    """Comando final: pelo Headroom quando saudável, direto caso contrário."""
+    if not healthy or not headroom:
+        return [agent_exe, *extra]
+    if agent == "claude":
+        # --no-mcp: o `wrap` gravaria o MCP `headroom` no ~/.claude.json para
+        # sempre; aqui ele vale só para esta sessão, via --mcp-config.
+        # Sem --1m: a flag fixa ANTHROPIC_MODEL num Opus específico e trocaria
+        # o modelo escolhido; um `model` com [1m] no settings.json já basta.
+        command = [
+            headroom, "wrap", "claude", "--no-proxy", "--no-mcp", "--port", port,
+            "--tool-search", "true", "--code-memory", "none",
+        ]
+        # `--` impede que flags do usuário (ex.: -p, --resume) sejam lidas pelo
+        # headroom. --mcp-config é variádico: vai por último para não engolir o prompt.
+        return [*command, "--", *extra, "--mcp-config", str(headroom_mcp_config_path())]
+    return [agent_exe, "--profile", "headroom", *extra]
+
+
+def headroom_mcp_config_path() -> Path:
+    return default_ca_bundle_path().parent / "headroom-mcp.json"
+
+
+def write_headroom_mcp_config(headroom: str, port: str) -> Path:
+    """Config de MCP por sessão (ferramenta de recuperação do Headroom)."""
+    path = headroom_mcp_config_path()
+    content = json.dumps(
+        {
+            "mcpServers": {
+                "headroom": {
+                    "type": "stdio",
+                    "command": headroom,
+                    "args": ["mcp", "serve"],
+                    "env": {"HEADROOM_PROXY_URL": f"http://127.0.0.1:{port}"},
+                }
+            }
+        },
+        indent=2,
+    ) + "\n"
+    if not path.exists() or path.read_text(encoding="utf-8") != content:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _run_foreground(command: list[str], env: dict) -> int:
+    """Roda uma TUI em primeiro plano; Ctrl+C pertence ao filho, não ao lançador."""
+    process = subprocess.Popen(command, env=env)
+    while True:
+        try:
+            return process.wait()
+        except KeyboardInterrupt:
+            continue
+
+
+def cmd_warm(_args) -> int:
+    """Pré-aquece o proxy em segundo plano e retorna na hora (chamado pelo perfil do shell)."""
+    if os.environ.get("AICONFIG_HEADROOM", "").strip().lower() in {"off", "0", "false", "no"}:
+        return 0
+    headroom = which("headroom", "headroom.exe")
+    if not headroom:
+        return 0
+    try:
+        port = configured_headroom_port()
+        if proxy_status(port) != "ok":
+            start_headroom_proxy_once(headroom, port, headroom_session_env()[0])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+# Chamadas que não abrem sessão de modelo: vão direto, sem esperar o proxy.
+DIRECT_AGENT_ARGS = {
+    "claude": {
+        "mcp", "config", "update", "doctor", "install", "plugin", "auth", "agents",
+        "setup-token", "migrate-installer", "--version", "-v", "--help", "-h",
+    },
+    "codex": {
+        "login", "logout", "mcp", "app-server", "completion", "debug", "doctor", "features",
+        "sandbox", "apply", "cloud", "update", "plugin", "marketplace",
+        "--version", "-V", "--help", "-h",
+    },
+}
+
+
+def is_management_call(agent: str, extra: list[str]) -> bool:
+    direct = DIRECT_AGENT_ARGS.get(agent, set())
+    return bool(extra) and (extra[0] in direct or any(a in {"--version", "--help", "-h"} for a in extra))
+
+
+def cmd_run(args) -> int:
+    """Abre `claude` ou `codex` pelo Headroom, com fallback para a conexão direta."""
+    extra = list(args.extra or [])
+    agent_exe = which(args.agent, f"{args.agent}.cmd", f"{args.agent}.exe")
+    if not agent_exe:
+        warn(f"{args.agent} não encontrado no PATH")
+        return 127
+    disabled = os.environ.get("AICONFIG_HEADROOM", "").strip().lower() in {"off", "0", "false", "no"}
+    if is_management_call(args.agent, extra):
+        return _run_foreground([agent_exe, *extra], dict(os.environ))
+    headroom = None if disabled else which("headroom", "headroom.exe")
+    env, _notes = headroom_session_env()
+    healthy = False
+    port = str(DEFAULT_HEADROOM_PORT)
+    if headroom:
+        try:
+            port = configured_headroom_port()
+            healthy = (
+                proxy_status(port) == "ok"
+                if args.dry_run
+                else ensure_headroom_proxy(headroom, port, env, headroom_auto_wait())
+            )
+        except ValueError as exc:
+            warn(str(exc))
+        if not healthy and not args.dry_run:
+            print(
+                f"  Headroom indisponível: abrindo {args.agent} direto no provedor "
+                "(log: ~/.headroom/ai-config-proxy.log)",
+                file=sys.stderr,
+            )
+    command = auto_agent_command(args.agent, agent_exe, headroom, port, healthy, extra)
+    if args.dry_run:
+        print(" ".join(command))
+        return 0
+    if healthy and headroom and args.agent == "claude":
+        write_headroom_mcp_config(headroom, port)
+    return _run_foreground(command, env if healthy else dict(os.environ))
+
+
+def shell_integration_block(shell: str, python: str, script: str) -> str:
+    """Funções `claude`/`codex` que passam pelo lançador automático."""
+    if shell == "powershell":
+        body = "\n".join(
+            f'function {agent} {{ & "{python}" "{script}" run {agent} @args }}' for agent in ("claude", "codex")
+        )
+        # Pre-aquecimento: nao bloqueia a abertura do terminal e so roda em
+        # sessao interativa (agentes abrem `pwsh -Command ...` a cada comando).
+        body += (
+            "\nif ($env:AICONFIG_HEADROOM -ne 'off' -and -not ([Environment]::GetCommandLineArgs() "
+            "-match '^-(c|command|f|file|e|encodedcommand|noni|noninteractive)$')) "
+            "{ try { Start-Process -WindowStyle Hidden "
+            f"-FilePath '{python}' -ArgumentList '\"{script}\"','warm' }} catch {{}} }}"
+        )
+    else:
+        body = "\n".join(
+            f'{agent}() {{ "{python}" "{script}" run {agent} "$@"; }}' for agent in ("claude", "codex")
+        )
+        body += (
+            '\ncase $- in *i*) [ "$AICONFIG_HEADROOM" = off ] || '
+            f'("{python}" "{script}" warm >/dev/null 2>&1 &) ;; esac'
+        )
+    # Somente ASCII: o Windows PowerShell 5.1 le perfis sem BOM como ANSI.
+    note = "# Headroom automatico com fallback direto. Desligue: AICONFIG_HEADROOM=off"
+    return f"{SHELL_BEGIN}\n{note}\n{body}\n{SHELL_END}\n"
+
+
+def shell_profile_targets() -> list[tuple[str, Path]]:
+    """Perfis de shell onde as funções entram (ou de onde saem)."""
+    targets: list[tuple[str, Path]] = []
+    if os.name == "nt":
+        for exe in ("pwsh", "powershell"):
+            found = which(exe)
+            if not found:
+                continue
+            try:
+                result = subprocess.run(
+                    [found, "-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserAllHosts"],
+                    capture_output=True, text=True, timeout=20,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            path = result.stdout.strip()
+            if result.returncode == 0 and path:
+                targets.append(("powershell", Path(path)))
+    for name in (".bashrc", ".zshrc"):
+        rc = Path.home() / name
+        if rc.exists():
+            targets.append(("posix", rc))
+    return targets
+
+
+def update_shell_profile(path: Path, block: str | None, ctx: Ctx) -> None:
+    """Escreve, atualiza ou remove (block=None) o bloco gerenciado de um perfil de shell."""
+    raw = path.read_bytes() if path.exists() else b""
+    bom = "﻿" if raw.startswith(b"\xef\xbb\xbf") else ""
+    current = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n")
+    pattern = re.compile(re.escape(SHELL_BEGIN) + r".*?" + re.escape(SHELL_END) + r"\n?", re.S)
+    if block is None:
+        updated = pattern.sub("", current)
+    elif pattern.search(current):
+        updated = pattern.sub(lambda _m: block, current)
+    else:
+        updated = (current.rstrip("\n") + "\n\n" if current.strip() else "") + block
+    if updated == current:
+        keep(f"{path} (já em dia)")
+        return
+    ctx.write(path, bom + updated)
+    add(f"{path} ({'modo automático removido' if block is None else 'modo automático do Headroom'})")
+
+
+def install_shell_integration(ctx: Ctx, enable: bool) -> None:
+    head("Headroom automático")
+    python = str(resolve_python()).replace("\\", "/")
+    script = str(ROOT / "tools" / "aiconfig.py").replace("\\", "/")
+    targets = shell_profile_targets()
+    if not targets:
+        warn("nenhum perfil de shell encontrado (PowerShell, ~/.bashrc ou ~/.zshrc)")
+    for shell, path in targets:
+        update_shell_profile(path, shell_integration_block(shell, python, script) if enable else None, ctx)
+    if enable and targets:
+        print("  abra um terminal novo: `claude` e `codex` passam pelo Headroom e caem")
+        print("  para a conexão direta se o proxy não responder.")
+
+
 def main() -> int:
+    # `run <agente> ...` repassa tudo ao agente (inclusive --help): não passa
+    # pelo argparse. `--aiconfig-dry-run` logo após o agente só mostra o comando.
+    if len(sys.argv) >= 3 and sys.argv[1] == "run" and sys.argv[2] in DIRECT_AGENT_ARGS:
+        rest = sys.argv[3:]
+        dry_run = bool(rest) and rest[0] == "--aiconfig-dry-run"
+        return cmd_run(
+            argparse.Namespace(agent=sys.argv[2], extra=rest[1:] if dry_run else rest, dry_run=dry_run)
+        )
+
     p = argparse.ArgumentParser(prog="aiconfig", description=__doc__)
     sub = p.add_subparsers(dest="cmd")
 
@@ -2354,6 +3051,17 @@ def main() -> int:
         action="store_true",
         help="aplica defaults seguros ao Codex e remove confiança ampla exata",
     )
+    auto = i.add_mutually_exclusive_group()
+    auto.add_argument(
+        "--headroom-auto",
+        action="store_true",
+        help="`claude`/`codex` passam pelo Headroom automaticamente, com fallback direto",
+    )
+    auto.add_argument(
+        "--no-headroom-auto",
+        action="store_true",
+        help="remove o modo automático do Headroom dos perfis de shell",
+    )
     g = i.add_mutually_exclusive_group()
     g.add_argument("--keep-existing", action="store_true", help="conflito: mantém o local")
     g.add_argument("--prefer-repo", action="store_true", help="conflito: usa o do repo")
@@ -2374,7 +3082,27 @@ def main() -> int:
     b.add_argument("--output", help="destino (padrão: ~/.config/ai-config/ca-bundle.pem)")
     b.set_defaults(func=cmd_ca_bundle)
 
-    args = p.parse_args()
+    h = sub.add_parser(
+        "headroom",
+        help="inicia Headroom por sessão: `claude` (wrap) ou `proxy` (para codex --profile headroom)",
+    )
+    h.add_argument("target", choices=("claude", "proxy"))
+    h.add_argument("--dry-run", action="store_true", help="mostra o comando sem executar")
+    # `*` e não REMAINDER: REMAINDER engoliria o próprio --dry-run e iniciaria
+    # a sessão de verdade. Argumentos para o headroom vão depois de `--`.
+    h.add_argument("extra", nargs="*", help="argumentos para o headroom, após `--`")
+    h.set_defaults(func=cmd_headroom)
+
+    w = sub.add_parser("warm", help="pré-aquece o proxy Headroom em segundo plano")
+    w.set_defaults(func=cmd_warm)
+
+    args, unknown = p.parse_known_args()
+    if unknown:
+        # Só o lançador do Headroom repassa opções próprias ao executável (o
+        # PowerShell consome o `--` antes de chegar aqui).
+        if args.cmd != "headroom":
+            p.error(f"argumentos não reconhecidos: {' '.join(unknown)}")
+        args.extra = [*args.extra, *unknown]
     if not args.cmd:
         p.print_help()
         return 1

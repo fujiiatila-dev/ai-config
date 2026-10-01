@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"{{AGENTS_HOME}}/skills/impeccable/scripts/impeccable\" ] || \"{{AGENTS_HOME}}/skills/impeccable/scripts/impeccable\" hook",
+            "commandWindows": "{{AGENTS_HOME_WIN}}\\skills\\impeccable\\scripts\\impeccable.cmd hook",
+            "timeout": 5,
+            "statusMessage": "Checking UI changes"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f \"{{AGENTS_HOME}}/skills/impeccable/scripts/impeccable\" ] || \"{{AGENTS_HOME}}/skills/impeccable/scripts/impeccable\" hook",
+            "commandWindows": "{{AGENTS_HOME_WIN}}\\skills\\impeccable\\scripts\\impeccable.cmd hook",
+            "timeout": 30,
+            "statusMessage": "Design deep pass"
+          }
+        ]
+      }
+    ]
+  }
+}

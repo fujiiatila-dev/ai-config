@@ -18,6 +18,21 @@ extras em [HEADROOM.md](HEADROOM.md).
 | [Status line](#status-line) | UX do Claude Code | sim | aparece no rodapé |
 | [Recuperação do Codex](#recuperação-de-sessões-do-codex) | reparo local | não | `--require-session` |
 
+## Onde cada agente recebe as ferramentas
+
+| | Claude Code | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Padrão de trabalho (`WORKFLOW.md`) | `~/.claude/CLAUDE.md` via `@WORKFLOW.md` | incorporado em `~/.codex/AGENTS.md` | regra `always_on` em `~/.gemini/config/rules/ai-config.md` |
+| RTK | hook `rtk hook claude` | hook `rtk hook codex` (`~/.codex/hooks.json`) | prefixo `rtk` manual (sem hook) |
+| Skills `openspec`, `qualidade`, `security-audit` | `~/.claude/skills` | `~/.agents/skills` | `~/.gemini/config/skills` |
+| Impeccable | `~/.claude/skills/impeccable` + hook | build próprio do Impeccable em `~/.agents` + hooks | instalador do Impeccable |
+| Headroom | `--headroom-auto` (automático) ou `--headroom claude` | `--headroom-auto` ou `--headroom proxy` + `codex --profile headroom` | — |
+
+Codex e Antigravity **não expandem `@arquivo`**. Por isso o instalador
+incorpora o `WORKFLOW.md` no próprio arquivo de instruções a partir da fonte
+única do repositório. O Antigravity também não lê `~/.gemini/GEMINI.md`, que
+serve só ao Gemini CLI; a raiz global dele é `~/.gemini/config/`.
+
 Resumo do fluxo de uma mudança:
 
 ```text
@@ -37,6 +52,8 @@ mesmas opções.
 ./install.sh                   # aplica, com backup de cada arquivo
 ./install.sh --doctor          # diagnóstico do ambiente
 ./install.sh --ca-bundle       # só se o doctor acusar TLS interceptado
+./install.sh --headroom claude # sessão Claude via Headroom (TLS e Kompress já ajustados)
+./install.sh --headroom proxy  # proxy para `codex --profile headroom`
 ```
 
 O que o `--doctor` confere e o que fazer em cada aviso:
@@ -53,6 +70,13 @@ O que o `--doctor` confere e o que fazer em cada aviso:
 | `headroom-proxy NÃO está respondendo` | normal fora de uma sessão Headroom | nada, o Headroom é opt-in |
 | `Roteamento Headroom persistente` | um agente depende do proxy para abrir | [HEADROOM.md > Recuperação](HEADROOM.md#recuperação-de-uma-instalação-legada) |
 | `codex … trusted` / sandbox | baseline do Codex fraco | `./install.sh --harden-codex` |
+| `features.daemon_auto_start ativo` | janelas de terminal no Codex (Windows) | veja [Codex no Windows](#codex-no-windows--janelas-de-terminal) |
+| `hook legado em hooks.json` | `rtk hook claude` ou `commandWindows` em sintaxe cmd | instalador com `--prefer-repo` (vira conflito, com backup) |
+| `hook rtk hook codex ausente` | a saída do shell do Codex não é condensada | rode o instalador |
+| `AGENTS.md usa @WORKFLOW.md` | o Codex não recebe o padrão de trabalho | rode o instalador |
+| `skills ausentes/desatualizadas` | Codex ou Antigravity sem as skills do repo | rode o instalador (`--prefer-repo` para atualizar) |
+| `regra global ausente` | o Antigravity não recebe o padrão de trabalho | rode o instalador |
+| `MCP headroom persistido` | um `headroom wrap claude` foi interrompido | `claude mcp remove headroom --scope user` |
 
 `--update-tools` atualiza OpenSpec, Semgrep, Gitleaks e Trivy para as versões
 de `versions.json`. RTK, Headroom, aurum e Codex Security têm canais próprios,
@@ -82,6 +106,12 @@ O instalador registra `rtk hook claude` em `PreToolUse` para as ferramentas
 O hook **respeita as permissões**: ele só devolve `allow` quando o comando
 original já está liberado no `settings.json`. Para os demais, o Claude Code
 pergunta normalmente.
+
+No **Codex**, o hook é `rtk hook codex` (matcher `Bash`, nome que o Codex dá a
+todo comando de shell, inclusive PowerShell). Lá o `allow` serve só para
+entregar o comando reescrito: a sandbox e a `approval_policy` do Codex
+continuam valendo. No **Antigravity** não há hook: prefixe `rtk` à mão em
+comandos de saída longa.
 
 ### Comandos do dia a dia
 
@@ -131,17 +161,35 @@ comprime o contexto enviado ao modelo. Ele fica **no caminho de rede** entre o
 agente e o provedor, por isso o ai-config nunca o ativa globalmente: uma sessão
 normal de `claude` ou `codex` funciona com o proxy desligado.
 
+### Modo automático
+
+`.\install.ps1 --headroom-auto` faz `claude` e `codex` no terminal passarem
+pelo Headroom sozinhos. Se o proxy não estiver saudável, o agente abre direto
+no provedor, com um aviso de uma linha. Nada é persistido: sem
+`ANTHROPIC_BASE_URL` global e sem MCP gravado. Um terminal interativo novo
+pré-aquece o proxy em segundo plano. Detalhes e como desligar em
+[HEADROOM.md](HEADROOM.md#modo-automático-opt-in-com-fallback-direto).
+
 ### Uso: Claude Code
 
-```powershell
-# somente se o doctor acusar TLS interceptado (veja abaixo)
-$env:SSL_CERT_FILE = "$HOME\.config\ai-config\ca-bundle.pem"
-$env:REQUESTS_CA_BUNDLE = $env:SSL_CERT_FILE
+Para uma sessão avulsa, use o lançador do repositório. Ele desliga o Kompress,
+aplica o bundle de CA quando existe (só no processo iniciado) e chama
+`headroom wrap claude` com a porta configurada:
 
-$env:HEADROOM_DISABLE_KOMPRESS = '1'
-$env:HEADROOM_DISABLE_KOMPRESS_FALLBACK = '1'
-headroom wrap claude --port 48731 --tool-search true
+```powershell
+.\install.ps1 --headroom claude             # Windows
+./install.sh --headroom claude              # Linux/macOS
+.\install.ps1 --headroom claude --dry-run   # só mostra o comando
 ```
+
+Argumentos extras vão direto para o `headroom` (ex.: `--headroom claude --no-mcp`).
+
+O `wrap` registra o MCP `headroom` no `~/.claude.json` e o remove ao sair. Se a
+sessão for morta à força, o registro fica, e toda sessão comum passa a iniciar
+um MCP apontando para o proxy parado. O `doctor` avisa; para limpar, rode
+`claude mcp remove headroom --scope user`.
+
+Equivalente manual:
 
 ```bash
 HEADROOM_DISABLE_KOMPRESS=1 HEADROOM_DISABLE_KOMPRESS_FALLBACK=1 \
@@ -150,11 +198,11 @@ HEADROOM_DISABLE_KOMPRESS=1 HEADROOM_DISABLE_KOMPRESS_FALLBACK=1 \
 
 ### Uso: Codex
 
-Em um terminal, suba o proxy com as mesmas variáveis e espere o `/readyz`
-(a partida leva ~30 s):
+Em um terminal, suba o proxy e espere o `/readyz`. A partida leva de 30 a 90 s
+na primeira vez:
 
-```bash
-headroom proxy --host 127.0.0.1 --port "${HEADROOM_PORT:-48731}" --mode cache --no-telemetry
+```powershell
+.\install.ps1 --headroom proxy
 ```
 
 Em outro terminal:
@@ -365,6 +413,43 @@ scripts órfãos.
 `~/.claude/statusline.py` mostra modelo, branch e diretório no rodapé do
 Claude Code. Precisa de um Python real: se o rodapé sumir no Windows, rode o
 `doctor`. O aviso `alias da Microsoft Store` indica a causa.
+
+---
+
+## Codex no Windows — janelas de terminal
+
+**Sintoma:** a cada comando, hook ou consulta ao git, abre (e às vezes fica
+aberta) uma janela do Windows Terminal, às vezes com
+`erro 2147942632 (0x800700e8) ao iniciar "git" ... status --porcelain`.
+
+**Causa:** desde a 0.157, o `codex` do terminal se conecta a um **daemon
+compartilhado** (`codex app-server daemon`). Esse daemon roda sem console e
+inicia hooks e o `git` interno sem `CREATE_NO_WINDOW`, então o Windows cria uma
+janela para cada processo (openai/codex#44768, ainda aberta na 0.159.1). No
+modo embutido, os mesmos processos herdam o console da sessão e nada aparece.
+
+**Correção aplicada pelo instalador (Windows):**
+
+1. `~/.codex/config.toml` recebe `[features] daemon_auto_start = false`: o
+   `codex` do terminal passa a usar o servidor embutido.
+2. `~/.codex/hooks.json` troca `rtk hook claude` por `rtk hook codex` e corrige
+   o `commandWindows` do Impeccable. A forma antiga, em sintaxe de cmd
+   (`if exist … & exit /b`), dava `ParserError` porque o Codex executa hooks
+   no PowerShell.
+
+**Depois de instalar, uma vez:**
+
+```powershell
+codex app-server daemon stop   # encerra o daemon que já está rodando (feche as sessões antes)
+codex                          # abra uma sessão e revise os hooks com /hooks
+```
+
+O Codex marca como `Modified` todo hook alterado e só volta a executá-lo
+depois que você o revisa e confia de novo em `/hooks`. O instalador não faz
+isso por você, de propósito.
+
+**Quando a correção oficial sair**, volte com `daemon_auto_start = true` no
+`~/.codex/config.toml` (ou remova a linha).
 
 ---
 

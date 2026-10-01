@@ -18,15 +18,19 @@ instalado nas máquinas de trabalho por `install.sh` / `install.ps1`.
 1. **O instalador nunca sobrescreve em silêncio.** Qualquer mudança em
    `tools/aiconfig.py` tem de preservar as quatro regras: adiciona o que falta,
    ignora o que já é igual, pergunta no conflito, e nunca remove entrada de
-   lista. Valide com `./install.sh --dry-run`.
+   lista. Valide com `./install.sh --dry-run`. Hooks legados sabidamente
+   quebrados (ex.: `rtk hook claude` no Codex) só saem via conflito explícito
+   (`drop_legacy_hooks`), com backup; `--keep-existing` os mantém.
 
 2. **Nada de caminho absoluto no repositório.** Use os placeholders
-   `{{PYTHON}}`, `{{NODE}}`, `{{CLAUDE_HOME}}`, `{{HEADROOM_PORT}}`, resolvidos
-   na máquina de destino.
+   `{{PYTHON}}`, `{{NODE}}`, `{{CLAUDE_HOME}}`, `{{AGENTS_HOME}}`,
+   `{{HEADROOM_PORT}}`, resolvidos na máquina de destino.
 
-3. **Regra de trabalho vai em `shared/WORKFLOW.md`**, não duplicada em
-   `adapters/codex/AGENTS.md` ou `adapters/gemini/GEMINI.md`
-   — esses três apenas apontam para ele.
+3. **Regra de trabalho vai em `shared/WORKFLOW.md`**, não duplicada nos
+   adapters. `claude/CLAUDE.md` usa `@WORKFLOW.md` (o Claude expande); Codex e
+   Antigravity não expandem `@arquivo`, então `adapters/codex/AGENTS.md`,
+   `adapters/gemini/GEMINI.md` e `adapters/gemini/antigravity-rule.md` usam
+   `<!-- ai-config:include shared/WORKFLOW.md -->`, resolvido na instalação.
 
 4. **Permissões versionadas são só as portáteis.** Nada de caminho de máquina,
    `localhost:<porta>` ou comando de um projeto específico. Isso é

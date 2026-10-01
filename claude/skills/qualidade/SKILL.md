@@ -34,7 +34,7 @@ Audite o projeto atual contra o padrão FreedomAI e melhore o score.
 
 3. **Complementos do padrão** (além do aurum):
    - Rode a suíte de testes e o lint do projeto, se existirem (veja comandos
-     no CLAUDE.md do projeto). Falhas aqui contam como reprovação.
+     no CLAUDE.md/AGENTS.md do projeto). Falhas aqui contam como reprovação.
    - Confira que `.env` está no `.gitignore` e que não há segredos commitados.
 
 4. **Re-auditoria**: rode `aurum check .` de novo e compare com o baseline.

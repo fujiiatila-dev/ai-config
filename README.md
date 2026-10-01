@@ -18,10 +18,13 @@ Gemini/Antigravity, em qualquer máquina.
 | **Subagentes** | `openspec-engineer`, `security-analyst`, `qa`, `tester`… | o Claude Code delega |
 | **Status line** | modelo, branch e pasta no rodapé | automático |
 
+O instalador entrega as mesmas regras e skills ao **Claude Code**, ao **Codex**
+(`~/.codex`, `~/.agents/skills`) e ao **Antigravity** (`~/.gemini/config`).
+
 **[TOOLS.md](TOOLS.md) é o guia de uso**: comandos do dia a dia, o que cada
 aviso do `--doctor` significa e como resolver os problemas conhecidos, como
-TLS interceptado por antivírus, statusLine vazia no Windows e Headroom que não
-sobe.
+TLS interceptado por antivírus, statusLine vazia no Windows, Headroom que não
+sobe e janelas de terminal abrindo no Codex.
 
 ## Instalação
 
@@ -77,6 +80,8 @@ o miolo do bloco é atualizado.
 ./install.sh --validate --json   # relatório estruturado para CI
 ./install.sh --doctor           # verifica runtimes, agentes e ferramentas
 ./install.sh --ca-bundle        # bundle de CA para Headroom/uv/pip atrás de inspeção TLS
+./install.sh --headroom claude  # sessão Headroom para o Claude (ou `proxy` para o Codex)
+./install.sh --headroom-auto    # `claude`/`codex` passam pelo Headroom sozinhos, com fallback direto
 ```
 
 No Windows, use as mesmas opções com `.\install.ps1`. `--update-tools` é
@@ -119,7 +124,9 @@ o valor atual é sempre mantido.
 Destinos, se você quiser mudá-los: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
 `GEMINI_HOME`, `RTK_CONFIG_DIR`, `HEADROOM_PORT`.
 
-Headroom é opt-in e nunca é iniciado nem injetado globalmente pelo instalador.
+Headroom é opt-in e nunca é injetado globalmente pelo instalador. Com
+`--headroom-auto`, funções de shell abrem `claude` e `codex` pelo proxy e caem
+para a conexão direta se ele não responder.
 Veja [`HEADROOM.md`](HEADROOM.md) para sessões isoladas, mitigação do
 Kompress/ONNX, perfil Codex sem WebSocket e recuperação de instalações legadas.
 
@@ -181,7 +188,7 @@ Se `pip`, `uv` ou `winget` falharem com `CERTIFICATE_VERIFY_FAILED`,
 ## Ferramentas e versões de referência
 
 O `./install.sh --doctor` compara as versões locais com estas referências
-(verificadas em 2026-09-27; a fonte é `versions.json`). Divergências geram
+(verificadas em 2026-09-29; a fonte é `versions.json`). Divergências geram
 aviso, não impedem a instalação.
 
 | Ferramenta | Versão ref. |
@@ -191,8 +198,8 @@ aviso, não impedem a instalação.
 | RTK | 0.50.0 |
 | Headroom | 0.39.1 |
 | aurum | 0.4.0 |
-| Claude Code | 2.1.283 |
-| Codex CLI | 0.157.1 |
+| Claude Code | 2.1.285 |
+| Codex CLI | 0.159.1 |
 | OpenSpec | 1.13.2 |
 | Semgrep | 1.178.0 |
 | Gitleaks | 8.30.1 |

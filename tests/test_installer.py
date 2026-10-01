@@ -51,7 +51,11 @@ def validation_fixture(parent: str | Path) -> Path:
         "adapters/codex/AGENTS.md",
         "adapters/codex/config.toml.example",
         "adapters/codex/headroom.config.toml.example",
+        "adapters/codex/hooks.json",
+        "adapters/codex/hooks.impeccable.json",
+        "adapters/codex/windows.config.toml.example",
         "adapters/gemini/GEMINI.md",
+        "adapters/gemini/antigravity-rule.md",
         "adapters/rtk/filters.toml",
         "tools/recover_codex_sessions.py",
         "versions.json",
@@ -62,6 +66,8 @@ def validation_fixture(parent: str | Path) -> Path:
         shutil.copy2(ROOT / relative, destination)
     (root / "claude/agents").mkdir(parents=True, exist_ok=True)
     (root / "claude/skills").mkdir(parents=True, exist_ok=True)
+    for skill in (ROOT / "claude/skills").iterdir():
+        (root / "claude/skills" / skill.name).mkdir(exist_ok=True)
     return root
 
 
@@ -259,7 +265,9 @@ class HeadroomConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn("ANTHROPIC_BASE_URL", settings.get("env", {}))
         self.assertNotIn('model_provider = "headroom"', codex)
-        self.assertFalse((ROOT / "adapters" / "codex" / "hooks.json").exists())
+        for source in ("hooks.json", "hooks.impeccable.json"):
+            codex_hooks = (ROOT / "adapters" / "codex" / source).read_text(encoding="utf-8")
+            self.assertNotIn("headroom", codex_hooks.lower())
         self.assertFalse((ROOT / "tools" / "headroom_healthcheck.py").exists())
 
     def test_codex_headroom_profile_is_explicit_and_disables_websockets(self) -> None:
@@ -959,6 +967,368 @@ class ToolInteropTests(unittest.TestCase):
         self.assertIn("wrapper-command-missing", codes)
 
 
+class CodexAndAntigravityTests(unittest.TestCase):
+    def _ctx(self, policy: str = "repo", dry_run: bool = False):
+        return AICONFIG.Ctx(
+            SimpleNamespace(
+                dry_run=dry_run,
+                prefer_repo=policy == "repo",
+                keep_existing=policy == "local",
+                yes=True,
+            )
+        )
+
+    def test_includes_are_expanded_from_the_repository(self) -> None:
+        body = AICONFIG.expand_includes("antes\n<!-- ai-config:include shared/WORKFLOW.md -->\ndepois")
+        workflow = (ROOT / "shared/WORKFLOW.md").read_text(encoding="utf-8").strip()
+        self.assertIn(workflow, body)
+        self.assertNotIn("ai-config:include", body)
+
+    def test_adapters_do_not_rely_on_at_imports(self) -> None:
+        for relative in AICONFIG.ADAPTER_INSTRUCTION_FILES:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"(?m)^@\S+", relative)
+            self.assertIn("<!-- ai-config:include shared/WORKFLOW.md -->", text, relative)
+
+    def test_preflight_rejects_at_import_and_missing_include(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = validation_fixture(temp)
+            agents = root / "adapters/codex/AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8")
+                + "\n@WORKFLOW.md\n<!-- ai-config:include nao/existe.md -->\n",
+                encoding="utf-8",
+            )
+            codes = [e["code"] for e in AICONFIG.validate_repository(root).as_dict()["errors"]]
+        self.assertIn("adapter-import-unsupported", codes)
+        self.assertIn("adapter-include-missing", codes)
+
+    def test_markdown_preamble_is_written_once_and_block_updates(self) -> None:
+        preamble = "---\ntrigger: always_on\n---\n\n"
+        with tempfile.TemporaryDirectory() as temp:
+            src = Path(temp) / "src.md"
+            dest = Path(temp) / "rules" / "ai-config.md"
+            src.write_text("versão 1", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                AICONFIG.install_markdown(src, dest, self._ctx(), preamble=preamble)
+                src.write_text("versão 2", encoding="utf-8")
+                AICONFIG.install_markdown(src, dest, self._ctx(), preamble=preamble)
+            text = dest.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("---\ntrigger: always_on\n---"))
+        self.assertEqual(text.count("trigger: always_on"), 1)
+        self.assertIn("versão 2", text)
+        self.assertNotIn("versão 1", text)
+
+    def test_legacy_codex_hooks_are_detected(self) -> None:
+        legacy_windows = 'if exist "a.cmd" ("a.cmd" hook & exit /b)'
+        self.assertIsNotNone(AICONFIG._codex_legacy_hook({"command": "rtk hook claude"}))
+        self.assertIsNotNone(AICONFIG._codex_legacy_hook({"command": "x", "commandWindows": legacy_windows}))
+        self.assertIsNone(AICONFIG._codex_legacy_hook({"command": "rtk hook codex"}))
+
+    def _legacy_codex_hooks(self) -> dict:
+        launcher = "C:\\u\\.agents\\skills\\impeccable\\scripts\\impeccable"
+        return {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
+                ],
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write|apply_patch",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"[ ! -f '{launcher}' ] || '{launcher}' hook",
+                                "commandWindows": f'if exist "{launcher}.cmd" ("{launcher}.cmd" hook & exit /b)',
+                            }
+                        ],
+                    }
+                ],
+                "Custom": [{"hooks": [{"type": "command", "command": "meu-hook"}]}],
+            }
+        }
+
+    def _install_codex_hooks(self, policy: str) -> dict:
+        with tempfile.TemporaryDirectory() as temp:
+            dest = Path(temp) / "hooks.json"
+            dest.write_text(json.dumps(self._legacy_codex_hooks()), encoding="utf-8")
+            subst = {"AGENTS_HOME": "C:/u/.agents", "AGENTS_HOME_WIN": "C:\\u\\.agents"}
+            with contextlib.redirect_stdout(io.StringIO()):
+                for source in ("hooks.json", "hooks.impeccable.json"):
+                    AICONFIG.install_json(
+                        ROOT / "adapters/codex" / source,
+                        dest,
+                        self._ctx(policy),
+                        subst,
+                        legacy=AICONFIG._codex_legacy_hook,
+                    )
+            return json.loads(dest.read_text(encoding="utf-8"))
+
+    def test_prefer_repo_replaces_broken_codex_hooks_without_duplicates(self) -> None:
+        hooks = self._install_codex_hooks("repo")["hooks"]
+        commands = [h.get("command") for e in hooks["PreToolUse"] for h in e["hooks"]]
+        self.assertEqual(commands, ["rtk hook codex"])
+        windows = [h.get("commandWindows", "") for e in hooks["PostToolUse"] for h in e["hooks"]]
+        self.assertEqual(windows, ["C:\\u\\.agents\\skills\\impeccable\\scripts\\impeccable.cmd hook"])
+        self.assertEqual(hooks["Custom"][0]["hooks"][0]["command"], "meu-hook")
+
+    def test_keep_existing_never_removes_legacy_hooks(self) -> None:
+        hooks = self._install_codex_hooks("local")["hooks"]
+        commands = [h.get("command") for e in hooks["PreToolUse"] for h in e["hooks"]]
+        self.assertIn("rtk hook claude", commands)
+
+    def test_codex_windows_hook_command_needs_no_quotes(self) -> None:
+        hooks = json.loads((ROOT / "adapters/codex/hooks.impeccable.json").read_text(encoding="utf-8"))["hooks"]
+        for event in ("PostToolUse", "Stop"):
+            windows = hooks[event][0]["hooks"][0]["commandWindows"]
+            self.assertNotIn('"', windows)
+            self.assertTrue(windows.startswith("{{AGENTS_HOME_WIN}}"))
+
+    def test_windows_fragment_disables_daemon_auto_start(self) -> None:
+        text = (ROOT / "adapters/codex/windows.config.toml.example").read_text(encoding="utf-8")
+        keys = AICONFIG._toml_keys(AICONFIG._toml_sections(text)["[features]"])
+        self.assertEqual(keys["daemon_auto_start"], "false")
+
+    def test_short_path_keeps_paths_without_spaces(self) -> None:
+        self.assertEqual(AICONFIG.windows_short_path(Path("C:/u/.agents")), "C:\\u\\.agents")
+
+    def _codex_profile(self, temp: str, *, daemon, legacy: bool, at_import: bool) -> tuple[Path, Path]:
+        codex = Path(temp) / "codex"
+        agents = Path(temp) / "agents"
+        codex.mkdir()
+        features = "[features]\nhooks = true\n" + (f"daemon_auto_start = {daemon}\n" if daemon else "")
+        (codex / "config.toml").write_text(features, encoding="utf-8")
+        clean = {
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook codex"}]}]
+            }
+        }
+        hooks = self._legacy_codex_hooks() if legacy else clean
+        (codex / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
+        (codex / "AGENTS.md").write_text("@WORKFLOW.md\n" if at_import else "texto\n", encoding="utf-8")
+        return codex, agents
+
+    def test_codex_findings_explain_windows_and_missing_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            codex, agents = self._codex_profile(temp, daemon=None, legacy=True, at_import=True)
+            text = "\n".join(AICONFIG.codex_local_findings(codex, agents, windows=True))
+        self.assertIn("daemon_auto_start", text)
+        self.assertIn("rtk hook codex", text)
+        self.assertIn("PowerShell", text)
+        self.assertIn("@WORKFLOW.md", text)
+        self.assertIn("skills ausentes", text)
+
+    def test_codex_findings_are_empty_for_a_clean_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            codex, agents = self._codex_profile(temp, daemon="false", legacy=False, at_import=False)
+            shutil.copytree(ROOT / "claude/skills", agents / "skills")
+            self.assertEqual(AICONFIG.codex_local_findings(codex, agents, windows=True), [])
+
+    def test_daemon_check_only_applies_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            codex, agents = self._codex_profile(temp, daemon=None, legacy=False, at_import=False)
+            shutil.copytree(ROOT / "claude/skills", agents / "skills")
+            self.assertEqual(AICONFIG.codex_local_findings(codex, agents, windows=False), [])
+
+    def test_antigravity_findings_report_rule_and_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            gemini = Path(temp) / "gemini"
+            gemini.mkdir()
+            text = "\n".join(AICONFIG.antigravity_local_findings(gemini))
+            self.assertIn("config/rules/ai-config.md", text)
+            self.assertIn("skills ausentes", text)
+            (gemini / "config" / "rules").mkdir(parents=True)
+            (gemini / "config" / "rules" / "ai-config.md").write_text("x", encoding="utf-8")
+            shutil.copytree(ROOT / "claude/skills", gemini / "config" / "skills")
+            self.assertEqual(AICONFIG.antigravity_local_findings(gemini), [])
+
+    def test_headroom_env_uses_bundle_without_overriding_the_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = Path(temp) / "ca.pem"
+            bundle.write_text("PEM", encoding="ascii")
+            with mock.patch.object(AICONFIG, "default_ca_bundle_path", return_value=bundle):
+                env, notes = AICONFIG.headroom_session_env({})
+                own, _ = AICONFIG.headroom_session_env({"SSL_CERT_FILE": "meu.pem"})
+        self.assertEqual(env["HEADROOM_DISABLE_KOMPRESS"], "1")
+        self.assertEqual(env["SSL_CERT_FILE"], str(bundle))
+        self.assertEqual(env["REQUESTS_CA_BUNDLE"], str(bundle))
+        self.assertTrue(notes)
+        self.assertEqual(own["SSL_CERT_FILE"], "meu.pem")
+
+    def test_headroom_commands_match_the_documented_session(self) -> None:
+        self.assertEqual(
+            AICONFIG.headroom_command("claude", "48731", "headroom", []),
+            ["headroom", "wrap", "claude", "--port", "48731", "--tool-search", "true"],
+        )
+        proxy = AICONFIG.headroom_command("proxy", "48731", "headroom", ["--lossless"])
+        self.assertEqual(proxy[:2], ["headroom", "proxy"])
+        self.assertIn("127.0.0.1", proxy)
+        self.assertEqual(proxy[-1], "--lossless")
+
+    def test_headroom_dry_run_never_launches(self) -> None:
+        argv = ["aiconfig", "headroom", "claude", "--dry-run", "--no-mcp"]
+        with (
+            mock.patch.object(AICONFIG.sys, "argv", argv),
+            mock.patch.object(AICONFIG, "which", return_value="headroom"),
+            mock.patch.object(AICONFIG, "tls_inspection_status", return_value=("ok", None)),
+            mock.patch.object(AICONFIG.subprocess, "call") as call,
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(AICONFIG.main(), 0)
+        call.assert_not_called()
+        self.assertIn("--no-mcp", output.getvalue())
+
+    def test_unknown_arguments_are_rejected_outside_headroom(self) -> None:
+        with (
+            mock.patch.object(AICONFIG.sys, "argv", ["aiconfig", "doctor", "--bogus"]),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            AICONFIG.main()
+
+    def test_doctor_flags_persisted_headroom_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / ".claude.json"
+            state.write_text(json.dumps({"mcpServers": {"headroom": {"command": "headroom"}}}), encoding="utf-8")
+            environment = {
+                "CLAUDE_STATE_FILE": str(state),
+                "CLAUDE_CONFIG_DIR": str(Path(temp) / "c"),
+                "CODEX_HOME": str(Path(temp) / "x"),
+                "ANTHROPIC_BASE_URL": "",
+                "OPENAI_BASE_URL": "",
+            }
+            with (
+                mock.patch.dict(os.environ, environment),
+                mock.patch.object(AICONFIG, "_windows_persistent_provider_env", return_value=set()),
+            ):
+                text = "\n".join(AICONFIG.headroom_persistence_findings())
+        self.assertIn("MCP `headroom`", text)
+
+class HeadroomAutoTests(unittest.TestCase):
+    def _ctx(self, dry_run: bool = False):
+        return AICONFIG.Ctx(SimpleNamespace(dry_run=dry_run, prefer_repo=False, keep_existing=True, yes=True))
+
+    def test_healthy_claude_goes_through_wrap_without_persistent_side_effects(self) -> None:
+        command = AICONFIG.auto_agent_command("claude", "claude.exe", "headroom", "48731", True, ["-p", "oi"])
+        self.assertEqual(command[:3], ["headroom", "wrap", "claude"])
+        self.assertIn("--no-proxy", command)
+        self.assertIn("--no-mcp", command)
+        self.assertNotIn("--1m", command)
+        separator = command.index("--")
+        self.assertEqual(command[separator + 1 : separator + 3], ["-p", "oi"])
+        self.assertEqual(command[-2], "--mcp-config")
+
+    def test_unhealthy_proxy_falls_back_to_the_direct_agent(self) -> None:
+        self.assertEqual(
+            AICONFIG.auto_agent_command("claude", "claude.exe", "headroom", "48731", False, ["--resume", "x"]),
+            ["claude.exe", "--resume", "x"],
+        )
+        self.assertEqual(
+            AICONFIG.auto_agent_command("codex", "codex.cmd", "headroom", "48731", False, []), ["codex.cmd"]
+        )
+
+    def test_healthy_codex_uses_the_opt_in_profile(self) -> None:
+        self.assertEqual(
+            AICONFIG.auto_agent_command("codex", "codex.cmd", "headroom", "48731", True, ["exec", "x"]),
+            ["codex.cmd", "--profile", "headroom", "exec", "x"],
+        )
+
+    def test_management_calls_skip_the_proxy(self) -> None:
+        self.assertTrue(AICONFIG.is_management_call("claude", ["--version"]))
+        self.assertTrue(AICONFIG.is_management_call("claude", ["mcp", "list"]))
+        self.assertTrue(AICONFIG.is_management_call("codex", ["login"]))
+        self.assertTrue(AICONFIG.is_management_call("codex", ["exec", "--help"]))
+        self.assertFalse(AICONFIG.is_management_call("claude", []))
+        self.assertFalse(AICONFIG.is_management_call("claude", ["-p", "oi"]))
+        self.assertFalse(AICONFIG.is_management_call("codex", ["exec", "faça x"]))
+
+    def _run(self, argv: list[str], *, healthy: bool, environment: dict | None = None):
+        with (
+            mock.patch.object(AICONFIG.sys, "argv", ["aiconfig", "run", *argv]),
+            mock.patch.object(AICONFIG, "which", side_effect=lambda *names: names[0]),
+            mock.patch.object(AICONFIG, "ensure_headroom_proxy", return_value=healthy) as ensure,
+            mock.patch.object(AICONFIG, "write_headroom_mcp_config"),
+            mock.patch.object(AICONFIG, "_run_foreground", return_value=0) as run,
+            mock.patch.dict(os.environ, environment or {"AICONFIG_HEADROOM": ""}),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = AICONFIG.main()
+        return code, ensure, run, stderr.getvalue()
+
+    def test_run_falls_back_and_says_so_when_proxy_is_down(self) -> None:
+        code, ensure, run, stderr = self._run(["claude", "-p", "oi"], healthy=False)
+        self.assertEqual(code, 0)
+        ensure.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["claude", "-p", "oi"])
+        self.assertNotIn("ANTHROPIC_BASE_URL", " ".join(run.call_args.args[0]))
+        self.assertIn("abrindo claude direto", stderr)
+
+    def test_run_uses_headroom_when_proxy_is_healthy(self) -> None:
+        _code, _ensure, run, _stderr = self._run(["claude"], healthy=True)
+        self.assertEqual(run.call_args.args[0][:3], ["headroom", "wrap", "claude"])
+
+    def test_kill_switch_never_touches_the_proxy(self) -> None:
+        _code, ensure, run, _stderr = self._run(
+            ["codex"], healthy=True, environment={"AICONFIG_HEADROOM": "off"}
+        )
+        ensure.assert_not_called()
+        self.assertEqual(run.call_args.args[0], ["codex"])
+
+    def test_agent_help_is_passed_through_untouched(self) -> None:
+        _code, ensure, run, _stderr = self._run(["claude", "--help"], healthy=True)
+        ensure.assert_not_called()
+        self.assertEqual(run.call_args.args[0], ["claude", "--help"])
+
+    def test_session_env_disables_wrap_telemetry(self) -> None:
+        with mock.patch.object(AICONFIG, "default_ca_bundle_path", return_value=Path("nao-existe.pem")):
+            env, _notes = AICONFIG.headroom_session_env({})
+        self.assertEqual(env["HEADROOM_BEACON"], "off")
+
+    def test_start_lock_prevents_a_second_proxy_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            lock = Path(temp) / "proxy.starting"
+            with (
+                mock.patch.object(AICONFIG, "_headroom_start_lock", return_value=lock),
+                mock.patch.object(AICONFIG, "start_headroom_proxy") as start,
+            ):
+                self.assertTrue(AICONFIG.start_headroom_proxy_once("headroom", "48731", {}))
+                self.assertFalse(AICONFIG.start_headroom_proxy_once("headroom", "48731", {}))
+        start.assert_called_once()
+
+    def test_shell_block_is_ascii_and_defines_both_agents(self) -> None:
+        for shell in ("powershell", "posix"):
+            block = AICONFIG.shell_integration_block(shell, "C:/Py/python.exe", "C:/repo/tools/aiconfig.py")
+            block.encode("ascii")
+            self.assertIn("run claude", block)
+            self.assertIn("run codex", block)
+            self.assertIn("warm", block)
+            self.assertTrue(block.startswith(AICONFIG.SHELL_BEGIN))
+
+    def test_shell_profile_block_is_added_updated_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            profile = Path(temp) / "profile.ps1"
+            profile.write_bytes(b"\xef\xbb\xbf# meu perfil\r\nSet-Alias g git\r\n")
+            first = AICONFIG.shell_integration_block("powershell", "py1", "s")
+            second = AICONFIG.shell_integration_block("powershell", "py2", "s")
+            with contextlib.redirect_stdout(io.StringIO()):
+                AICONFIG.update_shell_profile(profile, first, self._ctx())
+                AICONFIG.update_shell_profile(profile, second, self._ctx())
+                text = profile.read_bytes()
+                self.assertTrue(text.startswith(b"\xef\xbb\xbf"))
+                decoded = text.decode("utf-8-sig")
+                self.assertIn("Set-Alias g git", decoded)
+                self.assertEqual(decoded.count(AICONFIG.SHELL_BEGIN), 1)
+                self.assertIn("py2", decoded)
+                self.assertNotIn("py1", decoded)
+                AICONFIG.update_shell_profile(profile, None, self._ctx())
+            final = profile.read_bytes().decode("utf-8-sig")
+        self.assertNotIn(AICONFIG.SHELL_BEGIN, final)
+        self.assertIn("Set-Alias g git", final)
+
+    def test_install_does_not_touch_shell_profiles_without_the_flag(self) -> None:
+        source = (ROOT / "tools/aiconfig.py").read_text(encoding="utf-8")
+        self.assertIn('getattr(args, "headroom_auto", False) or getattr(args, "no_headroom_auto", False)', source)
+
 @unittest.skipUnless(os.name == "nt", "PowerShell wrapper test runs on Windows")
 class PowerShellInstallerTests(unittest.TestCase):
     def test_invalid_dry_run_preserves_error_and_skips_tools(self) -> None:
@@ -1010,3 +1380,30 @@ class BashInstallerTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 23)
         self.assertNotIn("Instalando dependências externas", result.stdout)
+
+
+class PythonDistVersionTests(unittest.TestCase):
+    def test_reads_version_from_owning_interpreter_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "Scripts"
+            scripts.mkdir()
+            (Path(temp) / "python.exe").write_text("", encoding="utf-8")
+            exe = scripts / "semgrep.exe"
+            exe.write_text("", encoding="utf-8")
+            done = subprocess.CompletedProcess([], 0, stdout="1.178.0\n", stderr="")
+            with mock.patch.object(AICONFIG.subprocess, "run", return_value=done) as run:
+                self.assertEqual(AICONFIG.python_dist_version(str(exe), "semgrep"), "1.178.0")
+        self.assertIn("importlib.metadata", run.call_args.args[0][2])
+
+    def test_returns_none_without_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertIsNone(AICONFIG.python_dist_version(str(Path(temp) / "semgrep.exe"), "semgrep"))
+
+
+class SharedSkillTests(unittest.TestCase):
+    def test_shared_skills_are_neutral_across_agents(self) -> None:
+        openspec = (ROOT / "claude/skills/openspec/SKILL.md").read_text(encoding="utf-8")
+        for client in ("claude", "codex", "gemini"):
+            self.assertIn(f"openspec init --tools {client}", openspec)
+        self.assertNotIn("no Claude Code.", openspec)
+        self.assertNotIn("impeccable", AICONFIG.SHARED_SKILLS)

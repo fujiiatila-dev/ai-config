@@ -26,6 +26,7 @@ for a in "$@"; do
         --doctor|doctor) CMD=doctor ;;
         --validate|validate) CMD=validate ;;
         --ca-bundle|ca-bundle) CMD=ca-bundle ;;
+        --headroom|headroom) CMD=headroom ;;
         -h|--help)
             cat <<'USO'
 uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-tools]
@@ -33,6 +34,7 @@ uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-to
      ./install.sh --validate [--json]
      ./install.sh --doctor
      ./install.sh --ca-bundle [--dry-run] [--output <arquivo>]
+     ./install.sh --headroom claude|proxy [--dry-run]
 
   --dry-run        mostra o que faria, sem escrever nada
   --keep-existing  em conflito, mantém sempre o valor atual
@@ -44,6 +46,9 @@ uso: ./install.sh [--dry-run] [--keep-existing|--prefer-repo] [--yes] [--skip-to
   --validate       valida o checkout sem escrever nem instalar ferramentas
   --doctor         verifica Python, Node, agentes e ferramentas recomendadas
   --ca-bundle      gera bundle de CA para Headroom/uv/pip atrás de inspeção TLS
+  --headroom       inicia Headroom por sessão (claude: wrap; proxy: para o Codex)
+  --headroom-auto  claude/codex passam pelo Headroom sozinhos, com fallback direto
+                   (--no-headroom-auto remove)
 
 Sem flags: configura todos os agentes e prepara OpenSpec, Semgrep,
 Gitleaks e Trivy. Nada é sobrescrito sem backup.

@@ -1,0 +1,9 @@
+# Fragmento aplicado somente no Windows, por cima do config.toml.example.
+#
+# O daemon compartilhado do Codex inicia hooks e consultas ao git sem
+# CREATE_NO_WINDOW e abre uma janela de console para cada um
+# (openai/codex#44768). Com o auto-start desligado, o `codex` do terminal usa o
+# servidor embutido, que herda o console da sessão. Reative quando a correção
+# oficial sair: `daemon_auto_start = true`.
+[features]
+daemon_auto_start = false

@@ -18,12 +18,14 @@ de escrever **como** construir.
 # Instalação global (uma vez)
 npm install -g @fission-ai/openspec@latest
 
-# Inicialização no projeto (uma vez por projeto)
-openspec init --tools claude
+# Inicialização no projeto (uma vez por projeto), com o cliente em uso
+openspec init --tools claude   # Claude Code
+openspec init --tools codex    # Codex
+openspec init --tools gemini   # Gemini / Antigravity
 ```
 
-Isso cria a estrutura `openspec/` no projeto e registra os slash commands
-`/opsx:*` no Claude Code.
+Isso cria a estrutura `openspec/` no projeto e registra os comandos `/opsx:*`
+(ou o equivalente do cliente) para o agente escolhido.
 
 ## Comandos
 
